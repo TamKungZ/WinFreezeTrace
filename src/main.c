@@ -22,9 +22,12 @@
 #pragma comment(lib, "advapi32.lib")
 
 #define APP_NAME L"WinFreezeTrace"
-#define VERSION_W L"0.2.0"
+#define VERSION_W L"0.2.1"
 #define SERVICE_NAME L"WinFreezeTrace"
 #define SERVICE_DISPLAY_NAME L"WinFreezeTrace Freeze Monitor"
+#define INSTALL_DIR_NAME L"WinFreezeTrace"
+#define INSTALL_EXE_NAME L"winfreezetrace.exe"
+#define MACHINE_ENV_KEY L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"
 #define MAX_DISKS 32
 #define MAX_TOP_IO 5
 #define MAX_PROCS 4096
@@ -309,6 +312,151 @@ static bool make_absolute_path(wchar_t *path, size_t cap) {
     return true;
 }
 
+
+static bool get_install_paths(wchar_t *dir, size_t dir_cap, wchar_t *exe, size_t exe_cap) {
+    wchar_t program_files[MAX_PATH_WFT];
+    DWORD n = GetEnvironmentVariableW(L"ProgramFiles", program_files, (DWORD)COUNTOF(program_files));
+    if (n == 0 || n >= COUNTOF(program_files)) {
+        wcsncpy(program_files, L"C:\\Program Files", COUNTOF(program_files) - 1);
+        program_files[COUNTOF(program_files) - 1] = L'\0';
+    }
+    _snwprintf(dir, dir_cap, L"%ls\\%ls", program_files, INSTALL_DIR_NAME);
+    dir[dir_cap - 1] = L'\0';
+    _snwprintf(exe, exe_cap, L"%ls\\%ls", dir, INSTALL_EXE_NAME);
+    exe[exe_cap - 1] = L'\0';
+    return dir[0] && exe[0];
+}
+
+static bool path_token_equal(const wchar_t *token, size_t token_len, const wchar_t *dir) {
+    while (token_len && (*token == L' ' || *token == L'\t')) { token++; token_len--; }
+    while (token_len && (token[token_len - 1] == L' ' || token[token_len - 1] == L'\t')) token_len--;
+    if (token_len >= 2 && token[0] == L'"' && token[token_len - 1] == L'"') {
+        token++; token_len -= 2;
+    }
+    while (token_len > 3 && (token[token_len - 1] == L'\\' || token[token_len - 1] == L'/')) token_len--;
+    size_t dir_len = wcslen(dir);
+    while (dir_len > 3 && (dir[dir_len - 1] == L'\\' || dir[dir_len - 1] == L'/')) dir_len--;
+    return token_len == dir_len && _wcsnicmp(token, dir, dir_len) == 0;
+}
+
+static bool path_list_contains(const wchar_t *path, const wchar_t *dir) {
+    if (!path || !dir) return false;
+    const wchar_t *start = path;
+    for (const wchar_t *p = path; ; ++p) {
+        if (*p == L';' || *p == L'\0') {
+            if (path_token_equal(start, (size_t)(p - start), dir)) return true;
+            if (*p == L'\0') break;
+            start = p + 1;
+        }
+    }
+    return false;
+}
+
+static void broadcast_environment_change(void) {
+    DWORD_PTR ignored = 0;
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"Environment",
+                        SMTO_ABORTIFHUNG, 3000, &ignored);
+}
+
+static bool update_machine_path(const wchar_t *dir, bool add, bool *changed) {
+    if (changed) *changed = false;
+    HKEY key = NULL;
+    LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, MACHINE_ENV_KEY, 0,
+                            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &key);
+    if (rc != ERROR_SUCCESS) {
+        SetLastError((DWORD)rc);
+        return false;
+    }
+
+    DWORD type = 0;
+    DWORD bytes = 0;
+    rc = RegQueryValueExW(key, L"Path", NULL, &type, NULL, &bytes);
+    if (rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND) {
+        RegCloseKey(key);
+        SetLastError((DWORD)rc);
+        return false;
+    }
+    if (type != REG_SZ && type != REG_EXPAND_SZ) type = REG_EXPAND_SZ;
+    if (bytes < sizeof(wchar_t)) bytes = sizeof(wchar_t);
+
+    size_t cap_chars = (size_t)(bytes / sizeof(wchar_t)) + wcslen(dir) + 8;
+    wchar_t *old_path = (wchar_t *)calloc(cap_chars, sizeof(wchar_t));
+    wchar_t *new_path = (wchar_t *)calloc(cap_chars, sizeof(wchar_t));
+    if (!old_path || !new_path) {
+        free(old_path); free(new_path); RegCloseKey(key); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return false;
+    }
+
+    DWORD read_bytes = (DWORD)(cap_chars * sizeof(wchar_t));
+    rc = RegQueryValueExW(key, L"Path", NULL, &type, (LPBYTE)old_path, &read_bytes);
+    if (rc == ERROR_FILE_NOT_FOUND) old_path[0] = L'\0';
+    else if (rc != ERROR_SUCCESS) {
+        free(old_path); free(new_path); RegCloseKey(key); SetLastError((DWORD)rc); return false;
+    }
+    old_path[cap_chars - 1] = L'\0';
+
+    bool contains = path_list_contains(old_path, dir);
+    if (add) {
+        if (contains) {
+            free(old_path); free(new_path); RegCloseKey(key); return true;
+        }
+        if (old_path[0]) {
+            size_t len = wcslen(old_path);
+            while (len && old_path[len - 1] == L';') old_path[--len] = L'\0';
+            _snwprintf(new_path, cap_chars, L"%ls;%ls", old_path, dir);
+        } else {
+            wcsncpy(new_path, dir, cap_chars - 1);
+        }
+    } else {
+        if (!contains) {
+            free(old_path); free(new_path); RegCloseKey(key); return true;
+        }
+        const wchar_t *start = old_path;
+        bool first = true;
+        size_t used = 0;
+        for (const wchar_t *p = old_path; ; ++p) {
+            if (*p == L';' || *p == L'\0') {
+                size_t token_len = (size_t)(p - start);
+                if (!path_token_equal(start, token_len, dir) && token_len) {
+                    if (!first && used + 1 < cap_chars) new_path[used++] = L';';
+                    if (used + token_len < cap_chars) {
+                        wmemcpy(new_path + used, start, token_len);
+                        used += token_len;
+                        new_path[used] = L'\0';
+                    }
+                    first = false;
+                }
+                if (*p == L'\0') break;
+                start = p + 1;
+            }
+        }
+    }
+
+    size_t out_bytes = (wcslen(new_path) + 1) * sizeof(wchar_t);
+    rc = RegSetValueExW(key, L"Path", 0, type, (const BYTE *)new_path, (DWORD)out_bytes);
+    free(old_path); free(new_path); RegCloseKey(key);
+    if (rc != ERROR_SUCCESS) { SetLastError((DWORD)rc); return false; }
+    if (changed) *changed = true;
+    broadcast_environment_change();
+    return true;
+}
+
+static bool install_cli_binary(wchar_t *installed_exe, size_t cap, bool *path_changed) {
+    wchar_t install_dir[MAX_PATH_WFT];
+    if (!get_install_paths(install_dir, COUNTOF(install_dir), installed_exe, cap)) return false;
+    if (!ensure_dir_recursive(install_dir)) return false;
+
+    wchar_t current_exe[MAX_PATH_WFT];
+    DWORD n = GetModuleFileNameW(NULL, current_exe, (DWORD)COUNTOF(current_exe));
+    if (n == 0 || n >= COUNTOF(current_exe)) return false;
+
+    if (_wcsicmp(current_exe, installed_exe) != 0) {
+        if (!CopyFileW(current_exe, installed_exe, FALSE)) return false;
+    }
+
+    if (!update_machine_path(install_dir, true, path_changed)) return false;
+    return true;
+}
+
 static void write_utf8_w(FILE *f, const wchar_t *s) {
     if (!s) return;
     int needed = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
@@ -379,15 +527,15 @@ static BOOL WINAPI console_handler(DWORD type) {
 static void print_usage(void) {
     wprintf(L"%ls %ls\n\n", APP_NAME, VERSION_W);
     wprintf(L"Usage:\n");
-    wprintf(L"  WinFreezeTrace.exe                  Run interactively\n");
-    wprintf(L"  WinFreezeTrace.exe run [options]    Run interactively\n");
-    wprintf(L"  WinFreezeTrace.exe install [options] Install auto-start Windows service\n");
-    wprintf(L"  WinFreezeTrace.exe start            Start installed service\n");
-    wprintf(L"  WinFreezeTrace.exe stop             Stop installed service\n");
-    wprintf(L"  WinFreezeTrace.exe restart          Restart installed service\n");
-    wprintf(L"  WinFreezeTrace.exe status           Show service status\n");
-    wprintf(L"  WinFreezeTrace.exe uninstall        Remove service\n");
-    wprintf(L"  WinFreezeTrace.exe logs             Print default service log path\n\n");
+    wprintf(L"  winfreezetrace                       Run interactively\n");
+    wprintf(L"  winfreezetrace run [options]         Run interactively\n");
+    wprintf(L"  winfreezetrace install [options]     Install global CLI + auto-start service\n");
+    wprintf(L"  winfreezetrace start                 Start installed service\n");
+    wprintf(L"  winfreezetrace stop                  Stop installed service\n");
+    wprintf(L"  winfreezetrace restart               Restart installed service\n");
+    wprintf(L"  winfreezetrace status                Show service status\n");
+    wprintf(L"  winfreezetrace uninstall             Remove service + global CLI PATH entry\n");
+    wprintf(L"  winfreezetrace logs                  Print default service log path\n\n");
     wprintf(L"Monitor options:\n");
     wprintf(L"  --interval <ms>       Sample interval, default 500\n");
     wprintf(L"  --ring-minutes <n>    In-memory history, default 30\n");
@@ -1259,28 +1407,6 @@ static void print_scm_error(const wchar_t *action, DWORD err) {
 static int command_install(int argc, wchar_t **argv) {
     if (!parse_args(argc, argv, 2, true)) return 2;
 
-    wchar_t exe[MAX_PATH_WFT];
-    DWORD n = GetModuleFileNameW(NULL, exe, (DWORD)COUNTOF(exe));
-    if (n == 0 || n >= COUNTOF(exe)) {
-        fwprintf(stderr, L"Cannot resolve executable path.\n");
-        return 3;
-    }
-
-    wchar_t bin_path[4096];
-    _snwprintf(bin_path, COUNTOF(bin_path),
-        L"\"%ls\" service-run --quiet --interval %lu --ring-minutes %lu --pre-minutes %lu "
-        L"--post-minutes %lu --latency-ms %.3f --queue %.3f --log-dir \"%ls\"%ls",
-        exe,
-        (unsigned long)g_cfg.interval_ms,
-        (unsigned long)g_cfg.ring_minutes,
-        (unsigned long)g_cfg.pre_minutes,
-        (unsigned long)g_cfg.post_minutes,
-        g_cfg.latency_trigger_ms,
-        g_cfg.queue_trigger,
-        g_cfg.log_dir,
-        g_cfg.process_io ? L"" : L" --no-process-io");
-    bin_path[COUNTOF(bin_path) - 1] = L'\0';
-
     SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
     if (!scm) {
         print_scm_error(L"Install", GetLastError());
@@ -1291,6 +1417,7 @@ static int command_install(int argc, wchar_t **argv) {
     SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME,
         SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE);
     if (svc) {
+        updated = true;
         SERVICE_STATUS_PROCESS existing_status;
         if (query_service_status_process(svc, &existing_status) &&
             existing_status.dwCurrentState != SERVICE_STOPPED) {
@@ -1311,6 +1438,45 @@ static int command_install(int argc, wchar_t **argv) {
                 return 5;
             }
         }
+    } else {
+        DWORD err = GetLastError();
+        if (err != ERROR_SERVICE_DOES_NOT_EXIST) {
+            CloseServiceHandle(scm);
+            print_scm_error(L"Open service", err);
+            return 5;
+        }
+    }
+
+    /* Copy only after the old service has stopped, so an in-use image cannot block an update. */
+    wchar_t exe[MAX_PATH_WFT];
+    bool path_changed = false;
+    if (!install_cli_binary(exe, COUNTOF(exe), &path_changed)) {
+        DWORD err = GetLastError();
+        if (svc) CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        if (err == ERROR_ACCESS_DENIED)
+            fwprintf(stderr, L"Install failed: access denied. Open CMD/PowerShell as Administrator.\n");
+        else
+            fwprintf(stderr, L"Install failed while copying CLI/updating PATH (Windows error %lu).\n", (unsigned long)err);
+        return 3;
+    }
+
+    wchar_t bin_path[4096];
+    _snwprintf(bin_path, COUNTOF(bin_path),
+        L"\"%ls\" service-run --quiet --interval %lu --ring-minutes %lu --pre-minutes %lu "
+        L"--post-minutes %lu --latency-ms %.3f --queue %.3f --log-dir \"%ls\"%ls",
+        exe,
+        (unsigned long)g_cfg.interval_ms,
+        (unsigned long)g_cfg.ring_minutes,
+        (unsigned long)g_cfg.pre_minutes,
+        (unsigned long)g_cfg.post_minutes,
+        g_cfg.latency_trigger_ms,
+        g_cfg.queue_trigger,
+        g_cfg.log_dir,
+        g_cfg.process_io ? L"" : L" --no-process-io");
+    bin_path[COUNTOF(bin_path) - 1] = L'\0';
+
+    if (svc) {
         if (!ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
                                   bin_path, NULL, NULL, NULL, NULL, NULL, SERVICE_DISPLAY_NAME)) {
             DWORD err = GetLastError();
@@ -1319,21 +1485,14 @@ static int command_install(int argc, wchar_t **argv) {
             print_scm_error(L"Update service", err);
             return 5;
         }
-        updated = true;
     } else {
-        DWORD err = GetLastError();
-        if (err != ERROR_SERVICE_DOES_NOT_EXIST) {
-            CloseServiceHandle(scm);
-            print_scm_error(L"Open service", err);
-            return 5;
-        }
         svc = CreateServiceW(
             scm, SERVICE_NAME, SERVICE_DISPLAY_NAME,
             SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE,
             SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
             bin_path, NULL, NULL, NULL, NULL, NULL);
         if (!svc) {
-            err = GetLastError();
+            DWORD err = GetLastError();
             CloseServiceHandle(scm);
             print_scm_error(L"Create service", err);
             return 6;
@@ -1372,10 +1531,11 @@ static int command_install(int argc, wchar_t **argv) {
 
     wprintf(L"WinFreezeTrace service %ls.\n", updated ? L"updated" : L"installed");
     wprintf(L"Startup: Automatic (starts at Windows boot)\n");
-    wprintf(L"State: %ls\n", running ? L"RUNNING" : L"start requested; check `WinFreezeTrace.exe status`");
+    wprintf(L"State: %ls\n", running ? L"RUNNING" : L"start requested; check `winfreezetrace status`");
     wprintf(L"Logs: %ls\n", g_cfg.log_dir);
-    wprintf(L"Executable: %ls\n", exe);
-    wprintf(L"Do not move/delete this EXE while the service is installed.\n");
+    wprintf(L"CLI: %ls\n", exe);
+    wprintf(L"PATH: %ls\n", path_changed ? L"added to Machine PATH" : L"already configured");
+    wprintf(L"Open a NEW CMD/PowerShell window, then use `winfreezetrace` from anywhere.\n");
     return 0;
 }
 
@@ -1472,30 +1632,67 @@ static int command_status(void) {
 }
 
 static int command_uninstall(void) {
+    bool service_removed = false;
     SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (!scm) { print_scm_error(L"Uninstall", GetLastError()); return 2; }
+
     SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE);
-    if (!svc) {
-        DWORD e = GetLastError(); CloseServiceHandle(scm);
-        if (e == ERROR_SERVICE_DOES_NOT_EXIST) {
-            wprintf(L"WinFreezeTrace service is already not installed.\n");
-            return 0;
+    if (svc) {
+        SERVICE_STATUS_PROCESS ssp;
+        if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState != SERVICE_STOPPED) {
+            SERVICE_STATUS status;
+            ControlService(svc, SERVICE_CONTROL_STOP, &status);
+            wait_for_service_state(svc, SERVICE_STOPPED, 30000);
         }
-        print_scm_error(L"Uninstall", e); return 3;
+
+        if (!DeleteService(svc)) {
+            DWORD e = GetLastError();
+            CloseServiceHandle(svc); CloseServiceHandle(scm);
+            print_scm_error(L"Delete service", e);
+            return 4;
+        }
+        service_removed = true;
+        CloseServiceHandle(svc);
+    } else {
+        DWORD e = GetLastError();
+        if (e != ERROR_SERVICE_DOES_NOT_EXIST) {
+            CloseServiceHandle(scm);
+            print_scm_error(L"Uninstall", e);
+            return 3;
+        }
+    }
+    CloseServiceHandle(scm);
+
+    wchar_t install_dir[MAX_PATH_WFT], installed_exe[MAX_PATH_WFT];
+    get_install_paths(install_dir, COUNTOF(install_dir), installed_exe, COUNTOF(installed_exe));
+    bool path_changed = false;
+    if (!update_machine_path(install_dir, false, &path_changed)) {
+        fwprintf(stderr, L"Warning: Machine PATH cleanup failed (Windows error %lu).\n",
+                 (unsigned long)GetLastError());
     }
 
-    SERVICE_STATUS_PROCESS ssp;
-    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState != SERVICE_STOPPED) {
-        SERVICE_STATUS status;
-        ControlService(svc, SERVICE_CONTROL_STOP, &status);
-        wait_for_service_state(svc, SERVICE_STOPPED, 30000);
+    wchar_t current_exe[MAX_PATH_WFT];
+    DWORD n = GetModuleFileNameW(NULL, current_exe, (DWORD)COUNTOF(current_exe));
+    bool running_from_installed = n > 0 && n < COUNTOF(current_exe) &&
+                                  _wcsicmp(current_exe, installed_exe) == 0;
+    if (running_from_installed) {
+        if (!MoveFileExW(installed_exe, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            fwprintf(stderr, L"Warning: CLI binary could not be scheduled for deletion (Windows error %lu).\n",
+                     (unsigned long)GetLastError());
+        } else {
+            /* Directory deletion is queued after the executable deletion. */
+            MoveFileExW(install_dir, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
+        }
+    } else {
+        DeleteFileW(installed_exe);
+        RemoveDirectoryW(install_dir);
     }
 
-    if (!DeleteService(svc)) {
-        DWORD e = GetLastError(); CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Delete service", e); return 4;
-    }
-    CloseServiceHandle(svc); CloseServiceHandle(scm);
-    wprintf(L"WinFreezeTrace service removed. Logs were kept.\n");
+    wprintf(L"WinFreezeTrace service: %ls.\n", service_removed ? L"removed" : L"already absent");
+    wprintf(L"Global CLI PATH entry: %ls.\n", path_changed ? L"removed" : L"already absent");
+    if (running_from_installed)
+        wprintf(L"Installed CLI binary will be deleted at the next reboot because it is currently running.\n");
+    wprintf(L"Logs were kept. Open a NEW terminal for PATH removal to be reflected there.\n");
     return 0;
 }
 

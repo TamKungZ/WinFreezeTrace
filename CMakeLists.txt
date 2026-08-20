@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(WinFreezeTrace VERSION 0.2.0 LANGUAGES C)
+project(WinFreezeTrace VERSION 0.2.1 LANGUAGES C)
 
 if(NOT WIN32)
     message(FATAL_ERROR "WinFreezeTrace targets Windows only.")
@@ -29,6 +29,7 @@ target_link_libraries(WinFreezeTrace PRIVATE
     pdh
     wevtapi
     advapi32
+    user32
 )
 
 install(TARGETS WinFreezeTrace RUNTIME DESTINATION .)

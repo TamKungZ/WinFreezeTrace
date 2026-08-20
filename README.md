@@ -2,20 +2,28 @@
 
 Native Windows C black-box recorder for intermittent freezes / storage stalls.
 
-Version: **0.2.0**
+Version: **0.2.1**
 
-## New in 0.2.0: background Windows service
+## Global CLI + background service
 
-WinFreezeTrace can now install itself as a normal Windows Service. The service:
+`install` now installs WinFreezeTrace like a normal command-line tool:
 
-- starts automatically at Windows boot
-- does not require the user to log in
-- has no console window while monitoring
-- is controlled entirely from CMD / PowerShell
-- restarts automatically after unexpected service failure
-- stores service logs under `%ProgramData%\WinFreezeTrace\logs` by default
+- copies the executable to `C:\Program Files\WinFreezeTrace\winfreezetrace.exe`
+- adds `C:\Program Files\WinFreezeTrace` to the **Machine PATH** using the Windows Registry API
+- installs the `WinFreezeTrace` Windows Service
+- configures the service as **Automatic** at Windows boot
+- starts the service immediately
+- keeps background service logs under `%ProgramData%\WinFreezeTrace\logs`
 
-> Put `WinFreezeTrace.exe` in a permanent location such as `C:\WinFreezeTrace\WinFreezeTrace.exe` before running `install`. The Windows Service points to that exact EXE path, so do not move/delete it while installed.
+After installation, open a **new** CMD or PowerShell window. You can then call it from any directory just like `cargo`, `python`, `pip`, or `gradle`:
+
+```bat
+winfreezetrace status
+winfreezetrace logs
+winfreezetrace restart
+```
+
+The PATH is changed system-wide. An already-open CMD cannot have its parent environment modified by a child process, so a new terminal is required once after install/uninstall.
 
 ## Build with Visual Studio / MSVC
 
@@ -32,57 +40,49 @@ Executable:
 build\Release\WinFreezeTrace.exe
 ```
 
-## Recommended installation
+## Install
 
-Copy the built EXE to a permanent path:
-
-```bat
-mkdir C:\WinFreezeTrace
-copy build\Release\WinFreezeTrace.exe C:\WinFreezeTrace\WinFreezeTrace.exe
-cd /d C:\WinFreezeTrace
-```
-
-Then open **CMD as Administrator** once and run:
+Open **CMD as Administrator** from the project directory and run:
 
 ```bat
-WinFreezeTrace.exe install
+build\Release\WinFreezeTrace.exe install
 ```
 
-`install` does two things immediately:
+You do **not** need to manually copy the EXE anywhere.
 
-1. registers `WinFreezeTrace` as an **Automatic** Windows Service
-2. starts the service now
-
-After that it starts automatically on every Windows boot.
-
-## CMD controls
-
-These commands can be run from CMD or PowerShell:
+Then close that terminal and open a new CMD/PowerShell:
 
 ```bat
-WinFreezeTrace.exe status
-WinFreezeTrace.exe start
-WinFreezeTrace.exe stop
-WinFreezeTrace.exe restart
-WinFreezeTrace.exe uninstall
-WinFreezeTrace.exe logs
+winfreezetrace status
 ```
 
-`install`, `start`, `stop`, `restart`, and `uninstall` may require an Administrator terminal because they control the Windows Service Control Manager.
+You can verify command discovery with:
 
-Example status:
+```bat
+where winfreezetrace
+```
+
+Expected path:
 
 ```text
-Service: WinFreezeTrace
-State: RUNNING
-PID: 1234
-Startup: Automatic
-Binary: "C:\WinFreezeTrace\WinFreezeTrace.exe" service-run ...
+C:\Program Files\WinFreezeTrace\winfreezetrace.exe
 ```
 
-## Install with custom monitor settings
+## Global CLI commands
 
-All normal monitor options can be saved into the service configuration at install/update time:
+```bat
+winfreezetrace status
+winfreezetrace start
+winfreezetrace stop
+winfreezetrace restart
+winfreezetrace logs
+winfreezetrace uninstall
+winfreezetrace --help
+```
+
+`install`, `start`, `stop`, `restart`, and `uninstall` can require an Administrator terminal because they control Windows Service configuration.
+
+## Install/update with custom monitor settings
 
 ```bat
 WinFreezeTrace.exe install ^
@@ -94,23 +94,45 @@ WinFreezeTrace.exe install ^
   --queue 10
 ```
 
+After the first installation, an update can also be run from a newly-built EXE. `install` will stop the old service before replacing the installed binary, update its configuration, and start it again.
+
 Custom service log path:
 
 ```bat
 WinFreezeTrace.exe install --log-dir C:\WinFreezeTraceLogs
 ```
 
-Running `install` again updates the existing service configuration instead of creating a duplicate service.
+## Background behavior
+
+The service:
+
+- starts automatically at Windows boot
+- does not require user login
+- has no console window while monitoring
+- runs independently of the CLI terminal
+- restarts after an unexpected service failure
+
+Default service logs:
+
+```text
+C:\ProgramData\WinFreezeTrace\logs
+```
+
+Print the path at any time:
+
+```bat
+winfreezetrace logs
+```
 
 ## Interactive / portable mode
 
-The old behavior is still supported.
+The executable can still be used without installing it:
 
 ```bat
 WinFreezeTrace.exe
 ```
 
-or explicitly:
+or:
 
 ```bat
 WinFreezeTrace.exe run
@@ -122,17 +144,7 @@ With options:
 WinFreezeTrace.exe run --interval 500 --ring-minutes 30
 ```
 
-Interactive mode defaults to:
-
-```text
-.\logs
-```
-
-Service mode defaults to:
-
-```text
-C:\ProgramData\WinFreezeTrace\logs
-```
+Interactive mode defaults to `./logs`; service mode defaults to `%ProgramData%\WinFreezeTrace\logs`.
 
 ## What it records
 
@@ -153,17 +165,17 @@ Every 500 ms by default:
 - top processes by read/write transfer rate
 - collector call duration and sample gap
 
-It also has a separate watchdog thread. If the collector heartbeat disappears for 2+ seconds, `watchdog.log` records the stage that was active (`pdh_collect`, `process_scan`, `file_write`, etc.).
+A separate watchdog thread checks the collector heartbeat. If the collector disappears for 2+ seconds, `watchdog.log` records the stage that was active, such as `pdh_collect`, `process_scan`, or `file_write`.
 
 ## Trigger behavior
 
-Default automatic trigger:
+Default trigger conditions:
 
 - any disk read/write latency >= 500 ms
 - any disk queue >= 10
 - collector heartbeat gap >= 2 seconds
 
-On a trigger it creates:
+A trigger creates:
 
 ```text
 logs/event-YYYY-MM-DD_HH-MM-SS-mmm/
@@ -174,48 +186,55 @@ logs/event-YYYY-MM-DD_HH-MM-SS-mmm/
 
 `metrics.csv` includes up to 5 minutes before the trigger from the in-memory ring buffer and 5 minutes after it.
 
-`eventlog.xml` exports relevant System log events around the trigger for these providers when present: disk, storahci, Ntfs, WHEA-Logger, Display, nvlddmkm, Kernel-Power.
+`eventlog.xml` exports relevant System log events around the trigger for providers such as disk, storahci, Ntfs, WHEA-Logger, Display, nvlddmkm, and Kernel-Power when present.
 
 ## Hard-reset survivability
 
-`rolling.csv` is continuously written and flushed roughly every 2 seconds. It rotates at 32 MiB and keeps one previous file as `rolling.prev.csv`, so normal long-running capture is capped around 64 MiB plus event folders.
+`rolling.csv` is continuously written and flushed roughly every 2 seconds. It rotates at 32 MiB and keeps `rolling.prev.csv`, so normal long-running capture is capped around 64 MiB plus event folders.
 
-If Windows hard-freezes before an event can finish, send:
+If Windows hard-freezes before an event can finish, preserve:
 
 ```text
 rolling.csv
 rolling.prev.csv
 watchdog.log
 errors.log
-event-*/   (if any)
+event-*/
 ```
 
 ## Service recovery
 
-The installed service is configured with Windows Service Recovery actions:
+The installed service uses Windows Service Recovery:
 
 - first unexpected failure: restart after 5 seconds
 - second: restart after 10 seconds
 - third: restart after 30 seconds
 - failure count resets after one day
 
-A normal `WinFreezeTrace.exe stop` does not count as an unexpected crash.
+A normal `winfreezetrace stop` is not an unexpected crash.
 
 ## Uninstall
 
-From Administrator CMD:
+From Administrator CMD/PowerShell:
 
 ```bat
-WinFreezeTrace.exe stop
-WinFreezeTrace.exe uninstall
+winfreezetrace uninstall
 ```
 
-`uninstall` removes only the service registration. Existing diagnostic logs are intentionally kept.
+This removes:
+
+- the Windows Service
+- the Machine PATH entry
+- the installed CLI executable
+
+If `uninstall` is currently executing from the installed binary, Windows schedules that EXE for deletion at the next reboot because a running executable cannot safely delete itself.
+
+Diagnostic logs are intentionally kept.
 
 ## Important notes
 
-- No repair operations are performed.
-- No CHKDSK, filesystem repair, SMART writes, format, or disk configuration changes.
-- Service mode runs as `LocalSystem`, which makes process/system telemetry more consistent than a normal user process.
-- This version still does not automatically start WPR/ETW. That remains separate so the monitor itself stays lightweight.
+- No CHKDSK, filesystem repair, SMART writes, format, or disk configuration changes are performed.
+- Machine PATH is edited through the Registry API rather than `setx`, avoiding `setx` PATH truncation/expansion issues.
+- Service mode runs as `LocalSystem`.
+- WPR/ETW automatic recording is still intentionally separate so this monitor remains lightweight.
 - `PhysicalDisk(*)` names are PDH instance names such as `0 C:` or `_Total`.
