@@ -2,7 +2,137 @@
 
 Native Windows C black-box recorder for intermittent freezes / storage stalls.
 
-Version: 0.1.0
+Version: **0.2.0**
+
+## New in 0.2.0: background Windows service
+
+WinFreezeTrace can now install itself as a normal Windows Service. The service:
+
+- starts automatically at Windows boot
+- does not require the user to log in
+- has no console window while monitoring
+- is controlled entirely from CMD / PowerShell
+- restarts automatically after unexpected service failure
+- stores service logs under `%ProgramData%\WinFreezeTrace\logs` by default
+
+> Put `WinFreezeTrace.exe` in a permanent location such as `C:\WinFreezeTrace\WinFreezeTrace.exe` before running `install`. The Windows Service points to that exact EXE path, so do not move/delete it while installed.
+
+## Build with Visual Studio / MSVC
+
+From a Developer Command Prompt or a terminal with Visual Studio Build Tools installed:
+
+```bat
+cmake -S . -B build -A x64
+cmake --build build --config Release
+```
+
+Executable:
+
+```text
+build\Release\WinFreezeTrace.exe
+```
+
+## Recommended installation
+
+Copy the built EXE to a permanent path:
+
+```bat
+mkdir C:\WinFreezeTrace
+copy build\Release\WinFreezeTrace.exe C:\WinFreezeTrace\WinFreezeTrace.exe
+cd /d C:\WinFreezeTrace
+```
+
+Then open **CMD as Administrator** once and run:
+
+```bat
+WinFreezeTrace.exe install
+```
+
+`install` does two things immediately:
+
+1. registers `WinFreezeTrace` as an **Automatic** Windows Service
+2. starts the service now
+
+After that it starts automatically on every Windows boot.
+
+## CMD controls
+
+These commands can be run from CMD or PowerShell:
+
+```bat
+WinFreezeTrace.exe status
+WinFreezeTrace.exe start
+WinFreezeTrace.exe stop
+WinFreezeTrace.exe restart
+WinFreezeTrace.exe uninstall
+WinFreezeTrace.exe logs
+```
+
+`install`, `start`, `stop`, `restart`, and `uninstall` may require an Administrator terminal because they control the Windows Service Control Manager.
+
+Example status:
+
+```text
+Service: WinFreezeTrace
+State: RUNNING
+PID: 1234
+Startup: Automatic
+Binary: "C:\WinFreezeTrace\WinFreezeTrace.exe" service-run ...
+```
+
+## Install with custom monitor settings
+
+All normal monitor options can be saved into the service configuration at install/update time:
+
+```bat
+WinFreezeTrace.exe install ^
+  --interval 500 ^
+  --ring-minutes 30 ^
+  --pre-minutes 5 ^
+  --post-minutes 5 ^
+  --latency-ms 500 ^
+  --queue 10
+```
+
+Custom service log path:
+
+```bat
+WinFreezeTrace.exe install --log-dir C:\WinFreezeTraceLogs
+```
+
+Running `install` again updates the existing service configuration instead of creating a duplicate service.
+
+## Interactive / portable mode
+
+The old behavior is still supported.
+
+```bat
+WinFreezeTrace.exe
+```
+
+or explicitly:
+
+```bat
+WinFreezeTrace.exe run
+```
+
+With options:
+
+```bat
+WinFreezeTrace.exe run --interval 500 --ring-minutes 30
+```
+
+Interactive mode defaults to:
+
+```text
+.\logs
+```
+
+Service mode defaults to:
+
+```text
+C:\ProgramData\WinFreezeTrace\logs
+```
 
 ## What it records
 
@@ -48,66 +178,44 @@ logs/event-YYYY-MM-DD_HH-MM-SS-mmm/
 
 ## Hard-reset survivability
 
-`logs/rolling.csv` is continuously written and flushed roughly every 2 seconds. It rotates at 32 MiB and keeps one previous file as `rolling.prev.csv`, so normal long-running capture is capped around 64 MiB plus event folders.
+`rolling.csv` is continuously written and flushed roughly every 2 seconds. It rotates at 32 MiB and keeps one previous file as `rolling.prev.csv`, so normal long-running capture is capped around 64 MiB plus event folders.
 
 If Windows hard-freezes before an event can finish, send:
 
 ```text
-logs/rolling.csv
-logs/rolling.prev.csv
-logs/watchdog.log
-logs/errors.log
-logs/event-*/   (if any)
+rolling.csv
+rolling.prev.csv
+watchdog.log
+errors.log
+event-*/   (if any)
 ```
 
-## Build with Visual Studio / MSVC
+## Service recovery
 
-From a Developer Command Prompt or normal terminal with Visual Studio Build Tools installed:
+The installed service is configured with Windows Service Recovery actions:
+
+- first unexpected failure: restart after 5 seconds
+- second: restart after 10 seconds
+- third: restart after 30 seconds
+- failure count resets after one day
+
+A normal `WinFreezeTrace.exe stop` does not count as an unexpected crash.
+
+## Uninstall
+
+From Administrator CMD:
 
 ```bat
-cmake -S . -B build -A x64
-cmake --build build --config Release
+WinFreezeTrace.exe stop
+WinFreezeTrace.exe uninstall
 ```
 
-Executable:
-
-```text
-build\Release\WinFreezeTrace.exe
-```
-
-## Build with Ninja + MSVC
-
-```bat
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-## Run
-
-Normal:
-
-```bat
-WinFreezeTrace.exe
-```
-
-Recommended for this freeze investigation:
-
-```bat
-WinFreezeTrace.exe --interval 500 --ring-minutes 30 --pre-minutes 5 --post-minutes 5 --latency-ms 500 --queue 10
-```
-
-Put logs somewhere else if desired:
-
-```bat
-WinFreezeTrace.exe --log-dir D:\WinFreezeTraceLogs
-```
-
-For the cleanest C:-only hardware test, keep the default local `logs` directory on C: so disconnected drives are not touched.
+`uninstall` removes only the service registration. Existing diagnostic logs are intentionally kept.
 
 ## Important notes
 
 - No repair operations are performed.
-- No CHKDSK, filesystem changes, SMART writes, or disk configuration changes.
-- Administrator rights are normally not required for the core PDH capture. Some processes may deny I/O-query access; they are simply skipped.
-- This first version does not automatically start WPR/ETW. That is intentionally separate so the initial monitor adds as little behavior as possible to the machine being diagnosed.
+- No CHKDSK, filesystem repair, SMART writes, format, or disk configuration changes.
+- Service mode runs as `LocalSystem`, which makes process/system telemetry more consistent than a normal user process.
+- This version still does not automatically start WPR/ETW. That remains separate so the monitor itself stays lightweight.
 - `PhysicalDisk(*)` names are PDH instance names such as `0 C:` or `_Total`.

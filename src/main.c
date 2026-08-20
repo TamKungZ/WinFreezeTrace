@@ -22,7 +22,9 @@
 #pragma comment(lib, "advapi32.lib")
 
 #define APP_NAME L"WinFreezeTrace"
-#define VERSION_W L"0.1.0"
+#define VERSION_W L"0.2.0"
+#define SERVICE_NAME L"WinFreezeTrace"
+#define SERVICE_DISPLAY_NAME L"WinFreezeTrace Freeze Monitor"
 #define MAX_DISKS 32
 #define MAX_TOP_IO 5
 #define MAX_PROCS 4096
@@ -146,6 +148,10 @@ static volatile LONG g_stage = STAGE_STARTING;
 static volatile LONG g_watchdog_trigger_pending = 0;
 static volatile LONG64 g_watchdog_gap_ms = 0;
 static CRITICAL_SECTION g_log_lock;
+static SERVICE_STATUS_HANDLE g_service_status_handle = NULL;
+static SERVICE_STATUS g_service_status;
+static int g_main_argc = 0;
+static wchar_t **g_main_argv = NULL;
 
 static wchar_t g_disk_names[MAX_DISKS][128];
 static size_t g_disk_count = 0;
@@ -241,6 +247,68 @@ static bool ensure_dir(const wchar_t *path) {
     return GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
+static bool ensure_dir_recursive(const wchar_t *path) {
+    if (!path || !path[0]) return false;
+    wchar_t tmp[MAX_PATH_WFT];
+    wcsncpy(tmp, path, COUNTOF(tmp) - 1);
+    tmp[COUNTOF(tmp) - 1] = L'\0';
+
+    size_t len = wcslen(tmp);
+    while (len > 0 && (tmp[len - 1] == L'\\' || tmp[len - 1] == L'/')) tmp[--len] = L'\0';
+    if (len == 0) return false;
+
+    size_t start = 0;
+    if (len >= 3 && tmp[1] == L':' && (tmp[2] == L'\\' || tmp[2] == L'/')) {
+        start = 3;
+    } else if (len >= 2 && tmp[0] == L'\\' && tmp[1] == L'\\') {
+        int separators = 0;
+        for (size_t i = 2; i < len; ++i) {
+            if (tmp[i] == L'\\' || tmp[i] == L'/') {
+                separators++;
+                if (separators == 2) { start = i + 1; break; }
+            }
+        }
+    }
+
+    for (size_t i = start; i < len; ++i) {
+        if (tmp[i] == L'/' ) tmp[i] = L'\\';
+        if (tmp[i] == L'\\') {
+            wchar_t saved = tmp[i];
+            tmp[i] = L'\0';
+            if (tmp[0] && !ensure_dir(tmp)) return false;
+            tmp[i] = saved;
+        }
+    }
+    return ensure_dir(tmp);
+}
+
+static void default_log_dir(wchar_t *dst, size_t cap, bool service_mode) {
+    if (!service_mode) {
+        wcsncpy(dst, L"logs", cap - 1);
+        dst[cap - 1] = L'\0';
+        return;
+    }
+
+    wchar_t program_data[MAX_PATH_WFT];
+    DWORD n = GetEnvironmentVariableW(L"ProgramData", program_data, (DWORD)COUNTOF(program_data));
+    if (n == 0 || n >= COUNTOF(program_data)) {
+        wcsncpy(program_data, L"C:\\ProgramData", COUNTOF(program_data) - 1);
+        program_data[COUNTOF(program_data) - 1] = L'\0';
+    }
+    _snwprintf(dst, cap, L"%ls\\WinFreezeTrace\\logs", program_data);
+    dst[cap - 1] = L'\0';
+}
+
+static bool make_absolute_path(wchar_t *path, size_t cap) {
+    if (!path || !path[0]) return false;
+    wchar_t full[MAX_PATH_WFT];
+    DWORD n = GetFullPathNameW(path, (DWORD)COUNTOF(full), full, NULL);
+    if (n == 0 || n >= COUNTOF(full)) return false;
+    wcsncpy(path, full, cap - 1);
+    path[cap - 1] = L'\0';
+    return true;
+}
+
 static void write_utf8_w(FILE *f, const wchar_t *s) {
     if (!s) return;
     int needed = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
@@ -310,17 +378,28 @@ static BOOL WINAPI console_handler(DWORD type) {
 
 static void print_usage(void) {
     wprintf(L"%ls %ls\n\n", APP_NAME, VERSION_W);
-    wprintf(L"Usage: WinFreezeTrace.exe [options]\n\n");
+    wprintf(L"Usage:\n");
+    wprintf(L"  WinFreezeTrace.exe                  Run interactively\n");
+    wprintf(L"  WinFreezeTrace.exe run [options]    Run interactively\n");
+    wprintf(L"  WinFreezeTrace.exe install [options] Install auto-start Windows service\n");
+    wprintf(L"  WinFreezeTrace.exe start            Start installed service\n");
+    wprintf(L"  WinFreezeTrace.exe stop             Stop installed service\n");
+    wprintf(L"  WinFreezeTrace.exe restart          Restart installed service\n");
+    wprintf(L"  WinFreezeTrace.exe status           Show service status\n");
+    wprintf(L"  WinFreezeTrace.exe uninstall        Remove service\n");
+    wprintf(L"  WinFreezeTrace.exe logs             Print default service log path\n\n");
+    wprintf(L"Monitor options:\n");
     wprintf(L"  --interval <ms>       Sample interval, default 500\n");
     wprintf(L"  --ring-minutes <n>    In-memory history, default 30\n");
     wprintf(L"  --pre-minutes <n>     Event history before trigger, default 5\n");
     wprintf(L"  --post-minutes <n>    Event capture after trigger, default 5\n");
     wprintf(L"  --latency-ms <n>      Trigger if disk read/write latency exceeds n, default 500\n");
     wprintf(L"  --queue <n>           Trigger if disk queue exceeds n, default 10\n");
-    wprintf(L"  --log-dir <path>      Log directory, default .\\logs\n");
+    wprintf(L"  --log-dir <path>      Log directory\n");
     wprintf(L"  --no-process-io       Disable top process I/O sampling\n");
     wprintf(L"  --quiet               Reduce console output\n");
-    wprintf(L"  --help                 Show this help\n");
+    wprintf(L"  --help                Show this help\n\n");
+    wprintf(L"Service mode default logs: %%ProgramData%%\\WinFreezeTrace\\logs\n");
 }
 
 static bool parse_u32(const wchar_t *s, DWORD *out) {
@@ -339,7 +418,7 @@ static bool parse_double_arg(const wchar_t *s, double *out) {
     return true;
 }
 
-static bool parse_args(int argc, wchar_t **argv) {
+static bool parse_args(int argc, wchar_t **argv, int start_index, bool service_mode) {
     g_cfg.interval_ms = 500;
     g_cfg.ring_minutes = 30;
     g_cfg.pre_minutes = 5;
@@ -348,9 +427,9 @@ static bool parse_args(int argc, wchar_t **argv) {
     g_cfg.queue_trigger = 10.0;
     g_cfg.process_io = true;
     g_cfg.quiet = false;
-    wcscpy(g_cfg.log_dir, L"logs");
+    default_log_dir(g_cfg.log_dir, COUNTOF(g_cfg.log_dir), service_mode);
 
-    for (int i = 1; i < argc; ++i) {
+    for (int i = start_index; i < argc; ++i) {
         if (!wcscmp(argv[i], L"--help") || !wcscmp(argv[i], L"-h")) {
             print_usage();
             return false;
@@ -385,6 +464,14 @@ static bool parse_args(int argc, wchar_t **argv) {
         g_cfg.latency_trigger_ms < 1.0 || g_cfg.queue_trigger < 0.0) {
         fwprintf(stderr, L"Invalid option range. Use --help.\n");
         return false;
+    }
+
+    if (service_mode) {
+        if (!make_absolute_path(g_cfg.log_dir, COUNTOF(g_cfg.log_dir))) {
+            fwprintf(stderr, L"Cannot resolve service log path.\n");
+            return false;
+        }
+        g_cfg.quiet = true;
     }
     return true;
 }
@@ -940,15 +1027,20 @@ static void print_status(const Sample *s) {
     fflush(stdout);
 }
 
-int wmain(int argc, wchar_t **argv) {
-    if (!parse_args(argc, argv)) {
-        if (argc > 1 && (!wcscmp(argv[1], L"--help") || !wcscmp(argv[1], L"-h"))) return 0;
+static int run_monitor(int argc, wchar_t **argv, int start_index, bool service_mode) {
+    InterlockedExchange(&g_stop, 0);
+    InterlockedExchange64(&g_heartbeat_ms, 0);
+    InterlockedExchange(&g_stage, STAGE_STARTING);
+    InterlockedExchange(&g_watchdog_trigger_pending, 0);
+    InterlockedExchange64(&g_watchdog_gap_ms, 0);
+
+    if (!parse_args(argc, argv, start_index, service_mode)) {
         return 2;
     }
 
     InitializeCriticalSection(&g_log_lock);
-    SetConsoleCtrlHandler(console_handler, TRUE);
-    if (!ensure_dir(g_cfg.log_dir)) {
+    if (!service_mode) SetConsoleCtrlHandler(console_handler, TRUE);
+    if (!ensure_dir_recursive(g_cfg.log_dir)) {
         fwprintf(stderr, L"Cannot create log directory: %ls (error %lu)\n", g_cfg.log_dir, GetLastError());
         DeleteCriticalSection(&g_log_lock);
         return 3;
@@ -967,6 +1059,7 @@ int wmain(int argc, wchar_t **argv) {
     if (!pdh_init(&pdh)) {
         fwprintf(stderr, L"PDH initialization failed.\n");
         free(g_ring);
+        g_ring = NULL;
         DeleteCriticalSection(&g_log_lock);
         return 5;
     }
@@ -999,53 +1092,53 @@ int wmain(int argc, wchar_t **argv) {
             continue;
         }
 
-        Sample s;
-        ZeroMemory(&s, sizeof(s));
-        s.seq = ++seq;
-        s.mono_ms = mono_ms();
-        GetSystemTimeAsFileTime(&s.utc);
-        s.interval_ms = (double)(s.mono_ms - last_sample_ms);
-        last_sample_ms = s.mono_ms;
+        Sample sample;
+        ZeroMemory(&sample, sizeof(sample));
+        sample.seq = ++seq;
+        sample.mono_ms = mono_ms();
+        GetSystemTimeAsFileTime(&sample.utc);
+        sample.interval_ms = (double)(sample.mono_ms - last_sample_ms);
+        last_sample_ms = sample.mono_ms;
 
         uint64_t t0 = mono_ms();
         heartbeat(STAGE_PDH_COLLECT);
         PDH_STATUS st = PdhCollectQueryData(pdh.query);
         uint64_t t1 = mono_ms();
-        s.pdh_ms = (double)(t1 - t0);
+        sample.pdh_ms = (double)(t1 - t0);
         if (st != ERROR_SUCCESS) {
             wchar_t line[256], ts[64];
-            filetime_to_local_text(s.utc, ts, COUNTOF(ts));
+            filetime_to_local_text(sample.utc, ts, COUNTOF(ts));
             _snwprintf(line, COUNTOF(line), L"%ls PdhCollectQueryData failed 0x%08lx", ts, (unsigned long)st);
             log_line_locked(L"errors.log", line);
         }
 
         heartbeat(STAGE_PDH_FORMAT);
-        s.cpu_pct = pdh_value(pdh.cpu);
-        s.dpc_pct = pdh_value(pdh.dpc);
-        s.interrupt_pct = pdh_value(pdh.interrupt);
-        s.avail_mb = pdh_value(pdh.avail_mb);
-        s.pages_sec = pdh_value(pdh.pages_sec);
-        s.process_count = pdh_value(pdh.processes);
-        s.thread_count = pdh_value(pdh.threads);
-        s.uptime_sec = pdh_value(pdh.uptime);
-        collect_disk_arrays(&pdh, &s);
+        sample.cpu_pct = pdh_value(pdh.cpu);
+        sample.dpc_pct = pdh_value(pdh.dpc);
+        sample.interrupt_pct = pdh_value(pdh.interrupt);
+        sample.avail_mb = pdh_value(pdh.avail_mb);
+        sample.pages_sec = pdh_value(pdh.pages_sec);
+        sample.process_count = pdh_value(pdh.processes);
+        sample.thread_count = pdh_value(pdh.threads);
+        sample.uptime_sec = pdh_value(pdh.uptime);
+        collect_disk_arrays(&pdh, &sample);
 
         uint64_t p0 = mono_ms();
         heartbeat(STAGE_PROCESS_SCAN);
-        collect_process_io(&s);
-        s.proc_ms = (double)(mono_ms() - p0);
+        collect_process_io(&sample);
+        sample.proc_ms = (double)(mono_ms() - p0);
 
-        s.trigger_flags = evaluate_triggers(&s);
+        sample.trigger_flags = evaluate_triggers(&sample);
 
         heartbeat(STAGE_RING_UPDATE);
-        ring_push(&s);
+        ring_push(&sample);
 
-        if (s.trigger_flags) start_event_capture(&s, s.trigger_flags);
+        if (sample.trigger_flags) start_event_capture(&sample, sample.trigger_flags);
 
         heartbeat(STAGE_FILE_WRITE);
-        rolling_write(&s);
-        event_append(&s);
-        print_status(&s);
+        rolling_write(&sample);
+        event_append(&sample);
+        print_status(&sample);
 
         heartbeat(STAGE_SLEEP);
         next_due += g_cfg.interval_ms;
@@ -1069,6 +1162,397 @@ int wmain(int argc, wchar_t **argv) {
     close_rolling();
     pdh_close(&pdh);
     free(g_ring);
+    g_ring = NULL;
+    g_ring_cap = g_ring_count = g_ring_head = 0;
     DeleteCriticalSection(&g_log_lock);
     return 0;
+}
+
+static const wchar_t *service_state_name(DWORD state) {
+    switch (state) {
+        case SERVICE_STOPPED: return L"STOPPED";
+        case SERVICE_START_PENDING: return L"START_PENDING";
+        case SERVICE_STOP_PENDING: return L"STOP_PENDING";
+        case SERVICE_RUNNING: return L"RUNNING";
+        case SERVICE_CONTINUE_PENDING: return L"CONTINUE_PENDING";
+        case SERVICE_PAUSE_PENDING: return L"PAUSE_PENDING";
+        case SERVICE_PAUSED: return L"PAUSED";
+        default: return L"UNKNOWN";
+    }
+}
+
+static void service_set_status(DWORD state, DWORD win32_exit, DWORD wait_hint) {
+    ZeroMemory(&g_service_status, sizeof(g_service_status));
+    g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_service_status.dwCurrentState = state;
+    g_service_status.dwWin32ExitCode = win32_exit;
+    g_service_status.dwWaitHint = wait_hint;
+    g_service_status.dwControlsAccepted =
+        (state == SERVICE_RUNNING) ? (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN) : 0;
+    if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
+}
+
+static void WINAPI service_ctrl_handler(DWORD control) {
+    switch (control) {
+        case SERVICE_CONTROL_STOP:
+        case SERVICE_CONTROL_SHUTDOWN:
+            InterlockedExchange(&g_stop, 1);
+            service_set_status(SERVICE_STOP_PENDING, NO_ERROR, 20000);
+            break;
+        case SERVICE_CONTROL_INTERROGATE:
+        default:
+            if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
+            break;
+    }
+}
+
+static void WINAPI service_main(DWORD argc, LPWSTR *argv) {
+    (void)argc;
+    (void)argv;
+    g_service_status_handle = RegisterServiceCtrlHandlerW(SERVICE_NAME, service_ctrl_handler);
+    if (!g_service_status_handle) return;
+
+    service_set_status(SERVICE_START_PENDING, NO_ERROR, 5000);
+    service_set_status(SERVICE_RUNNING, NO_ERROR, 0);
+    int rc = run_monitor(g_main_argc, g_main_argv, 2, true);
+
+    if (rc == 0) {
+        service_set_status(SERVICE_STOPPED, NO_ERROR, 0);
+    } else {
+        ZeroMemory(&g_service_status, sizeof(g_service_status));
+        g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+        g_service_status.dwCurrentState = SERVICE_STOPPED;
+        g_service_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+        g_service_status.dwServiceSpecificExitCode = (DWORD)rc;
+        if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
+    }
+}
+
+static bool query_service_status_process(SC_HANDLE svc, SERVICE_STATUS_PROCESS *ssp) {
+    DWORD needed = 0;
+    ZeroMemory(ssp, sizeof(*ssp));
+    return QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)ssp, sizeof(*ssp), &needed) != FALSE;
+}
+
+static bool wait_for_service_state(SC_HANDLE svc, DWORD target, DWORD timeout_ms) {
+    uint64_t deadline = mono_ms() + timeout_ms;
+    SERVICE_STATUS_PROCESS ssp;
+    while (mono_ms() < deadline) {
+        if (!query_service_status_process(svc, &ssp)) return false;
+        if (ssp.dwCurrentState == target) return true;
+        if (target == SERVICE_RUNNING && ssp.dwCurrentState == SERVICE_STOPPED) return false;
+        Sleep(200);
+    }
+    return false;
+}
+
+static void print_scm_error(const wchar_t *action, DWORD err) {
+    if (err == ERROR_ACCESS_DENIED) {
+        fwprintf(stderr, L"%ls failed: access denied. Open CMD/PowerShell as Administrator.\n", action);
+    } else if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
+        fwprintf(stderr, L"%ls failed: WinFreezeTrace service is not installed.\n", action);
+    } else {
+        fwprintf(stderr, L"%ls failed (Windows error %lu).\n", action, (unsigned long)err);
+    }
+}
+
+static int command_install(int argc, wchar_t **argv) {
+    if (!parse_args(argc, argv, 2, true)) return 2;
+
+    wchar_t exe[MAX_PATH_WFT];
+    DWORD n = GetModuleFileNameW(NULL, exe, (DWORD)COUNTOF(exe));
+    if (n == 0 || n >= COUNTOF(exe)) {
+        fwprintf(stderr, L"Cannot resolve executable path.\n");
+        return 3;
+    }
+
+    wchar_t bin_path[4096];
+    _snwprintf(bin_path, COUNTOF(bin_path),
+        L"\"%ls\" service-run --quiet --interval %lu --ring-minutes %lu --pre-minutes %lu "
+        L"--post-minutes %lu --latency-ms %.3f --queue %.3f --log-dir \"%ls\"%ls",
+        exe,
+        (unsigned long)g_cfg.interval_ms,
+        (unsigned long)g_cfg.ring_minutes,
+        (unsigned long)g_cfg.pre_minutes,
+        (unsigned long)g_cfg.post_minutes,
+        g_cfg.latency_trigger_ms,
+        g_cfg.queue_trigger,
+        g_cfg.log_dir,
+        g_cfg.process_io ? L"" : L" --no-process-io");
+    bin_path[COUNTOF(bin_path) - 1] = L'\0';
+
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
+    if (!scm) {
+        print_scm_error(L"Install", GetLastError());
+        return 4;
+    }
+
+    bool updated = false;
+    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME,
+        SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE);
+    if (svc) {
+        SERVICE_STATUS_PROCESS existing_status;
+        if (query_service_status_process(svc, &existing_status) &&
+            existing_status.dwCurrentState != SERVICE_STOPPED) {
+            SERVICE_STATUS stop_status;
+            if (!ControlService(svc, SERVICE_CONTROL_STOP, &stop_status)) {
+                DWORD stop_err = GetLastError();
+                if (stop_err != ERROR_SERVICE_NOT_ACTIVE) {
+                    CloseServiceHandle(svc);
+                    CloseServiceHandle(scm);
+                    print_scm_error(L"Stop old service before update", stop_err);
+                    return 5;
+                }
+            }
+            if (!wait_for_service_state(svc, SERVICE_STOPPED, 30000)) {
+                CloseServiceHandle(svc);
+                CloseServiceHandle(scm);
+                fwprintf(stderr, L"Existing service did not stop; update was not applied.\n");
+                return 5;
+            }
+        }
+        if (!ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+                                  bin_path, NULL, NULL, NULL, NULL, NULL, SERVICE_DISPLAY_NAME)) {
+            DWORD err = GetLastError();
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            print_scm_error(L"Update service", err);
+            return 5;
+        }
+        updated = true;
+    } else {
+        DWORD err = GetLastError();
+        if (err != ERROR_SERVICE_DOES_NOT_EXIST) {
+            CloseServiceHandle(scm);
+            print_scm_error(L"Open service", err);
+            return 5;
+        }
+        svc = CreateServiceW(
+            scm, SERVICE_NAME, SERVICE_DISPLAY_NAME,
+            SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE,
+            SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+            bin_path, NULL, NULL, NULL, NULL, NULL);
+        if (!svc) {
+            err = GetLastError();
+            CloseServiceHandle(scm);
+            print_scm_error(L"Create service", err);
+            return 6;
+        }
+    }
+
+    SERVICE_DESCRIPTIONW desc;
+    desc.lpDescription = L"Low-overhead black-box recorder for Windows freezes, disk stalls, DPC/interrupt spikes and process I/O.";
+    ChangeServiceConfig2W(svc, SERVICE_CONFIG_DESCRIPTION, &desc);
+
+    SC_ACTION actions[3] = {
+        { SC_ACTION_RESTART, 5000 },
+        { SC_ACTION_RESTART, 10000 },
+        { SC_ACTION_RESTART, 30000 }
+    };
+    SERVICE_FAILURE_ACTIONSW failure;
+    ZeroMemory(&failure, sizeof(failure));
+    failure.dwResetPeriod = 86400;
+    failure.cActions = (DWORD)COUNTOF(actions);
+    failure.lpsaActions = actions;
+    ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS, &failure);
+
+    if (!StartServiceW(svc, 0, NULL)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            print_scm_error(L"Start service", err);
+            return 7;
+        }
+    }
+
+    bool running = wait_for_service_state(svc, SERVICE_RUNNING, 15000);
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+
+    wprintf(L"WinFreezeTrace service %ls.\n", updated ? L"updated" : L"installed");
+    wprintf(L"Startup: Automatic (starts at Windows boot)\n");
+    wprintf(L"State: %ls\n", running ? L"RUNNING" : L"start requested; check `WinFreezeTrace.exe status`");
+    wprintf(L"Logs: %ls\n", g_cfg.log_dir);
+    wprintf(L"Executable: %ls\n", exe);
+    wprintf(L"Do not move/delete this EXE while the service is installed.\n");
+    return 0;
+}
+
+static int command_start(void) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) { print_scm_error(L"Start", GetLastError()); return 2; }
+    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
+    if (!svc) { DWORD e = GetLastError(); CloseServiceHandle(scm); print_scm_error(L"Start", e); return 3; }
+
+    SERVICE_STATUS_PROCESS ssp;
+    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState == SERVICE_RUNNING) {
+        wprintf(L"WinFreezeTrace is already RUNNING (PID %lu).\n", (unsigned long)ssp.dwProcessId);
+        CloseServiceHandle(svc); CloseServiceHandle(scm); return 0;
+    }
+
+    if (!StartServiceW(svc, 0, NULL)) {
+        DWORD e = GetLastError();
+        if (e != ERROR_SERVICE_ALREADY_RUNNING) {
+            CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Start", e); return 4;
+        }
+    }
+    bool ok = wait_for_service_state(svc, SERVICE_RUNNING, 15000);
+    if (ok && query_service_status_process(svc, &ssp))
+        wprintf(L"WinFreezeTrace RUNNING (PID %lu).\n", (unsigned long)ssp.dwProcessId);
+    else
+        fwprintf(stderr, L"Service did not reach RUNNING state within the wait window.\n");
+    CloseServiceHandle(svc); CloseServiceHandle(scm);
+    return ok ? 0 : 5;
+}
+
+static int command_stop(void) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) { print_scm_error(L"Stop", GetLastError()); return 2; }
+    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
+    if (!svc) { DWORD e = GetLastError(); CloseServiceHandle(scm); print_scm_error(L"Stop", e); return 3; }
+
+    SERVICE_STATUS_PROCESS ssp;
+    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState == SERVICE_STOPPED) {
+        wprintf(L"WinFreezeTrace is already STOPPED.\n");
+        CloseServiceHandle(svc); CloseServiceHandle(scm); return 0;
+    }
+
+    SERVICE_STATUS status;
+    if (!ControlService(svc, SERVICE_CONTROL_STOP, &status)) {
+        DWORD e = GetLastError();
+        if (e != ERROR_SERVICE_NOT_ACTIVE) {
+            CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Stop", e); return 4;
+        }
+    }
+    bool ok = wait_for_service_state(svc, SERVICE_STOPPED, 30000);
+    if (ok) wprintf(L"WinFreezeTrace STOPPED.\n");
+    else fwprintf(stderr, L"Service did not stop within the wait window.\n");
+    CloseServiceHandle(svc); CloseServiceHandle(scm);
+    return ok ? 0 : 5;
+}
+
+static int command_status(void) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) { print_scm_error(L"Status", GetLastError()); return 2; }
+    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
+    if (!svc) {
+        DWORD e = GetLastError();
+        CloseServiceHandle(scm);
+        if (e == ERROR_SERVICE_DOES_NOT_EXIST) {
+            wprintf(L"WinFreezeTrace service: NOT INSTALLED\n");
+            return 1;
+        }
+        print_scm_error(L"Status", e); return 3;
+    }
+
+    SERVICE_STATUS_PROCESS ssp;
+    if (!query_service_status_process(svc, &ssp)) {
+        DWORD e = GetLastError(); CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Status", e); return 4;
+    }
+
+    DWORD needed = 0;
+    QueryServiceConfigW(svc, NULL, 0, &needed);
+    QUERY_SERVICE_CONFIGW *cfg = needed ? (QUERY_SERVICE_CONFIGW *)malloc(needed) : NULL;
+    if (cfg && QueryServiceConfigW(svc, cfg, needed, &needed)) {
+        const wchar_t *startup = L"Other";
+        if (cfg->dwStartType == SERVICE_AUTO_START) startup = L"Automatic";
+        else if (cfg->dwStartType == SERVICE_DEMAND_START) startup = L"Manual";
+        else if (cfg->dwStartType == SERVICE_DISABLED) startup = L"Disabled";
+        wprintf(L"Service: WinFreezeTrace\nState: %ls\nPID: %lu\nStartup: %ls\nBinary: %ls\n",
+                service_state_name(ssp.dwCurrentState), (unsigned long)ssp.dwProcessId,
+                startup, cfg->lpBinaryPathName ? cfg->lpBinaryPathName : L"-");
+    } else {
+        wprintf(L"Service: WinFreezeTrace\nState: %ls\nPID: %lu\n",
+                service_state_name(ssp.dwCurrentState), (unsigned long)ssp.dwProcessId);
+    }
+    free(cfg);
+    CloseServiceHandle(svc); CloseServiceHandle(scm);
+    return 0;
+}
+
+static int command_uninstall(void) {
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) { print_scm_error(L"Uninstall", GetLastError()); return 2; }
+    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE);
+    if (!svc) {
+        DWORD e = GetLastError(); CloseServiceHandle(scm);
+        if (e == ERROR_SERVICE_DOES_NOT_EXIST) {
+            wprintf(L"WinFreezeTrace service is already not installed.\n");
+            return 0;
+        }
+        print_scm_error(L"Uninstall", e); return 3;
+    }
+
+    SERVICE_STATUS_PROCESS ssp;
+    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState != SERVICE_STOPPED) {
+        SERVICE_STATUS status;
+        ControlService(svc, SERVICE_CONTROL_STOP, &status);
+        wait_for_service_state(svc, SERVICE_STOPPED, 30000);
+    }
+
+    if (!DeleteService(svc)) {
+        DWORD e = GetLastError(); CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Delete service", e); return 4;
+    }
+    CloseServiceHandle(svc); CloseServiceHandle(scm);
+    wprintf(L"WinFreezeTrace service removed. Logs were kept.\n");
+    return 0;
+}
+
+static int command_logs(void) {
+    wchar_t path[MAX_PATH_WFT];
+    default_log_dir(path, COUNTOF(path), true);
+    make_absolute_path(path, COUNTOF(path));
+    wprintf(L"%ls\n", path);
+    return 0;
+}
+
+static int command_service_run(void) {
+    SERVICE_TABLE_ENTRYW table[] = {
+        { (LPWSTR)SERVICE_NAME, service_main },
+        { NULL, NULL }
+    };
+    if (!StartServiceCtrlDispatcherW(table)) {
+        DWORD e = GetLastError();
+        if (e == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+            fwprintf(stderr, L"`service-run` is internal and must be launched by Windows Service Control Manager.\n");
+        } else {
+            fwprintf(stderr, L"StartServiceCtrlDispatcher failed (Windows error %lu).\n", (unsigned long)e);
+        }
+        return 8;
+    }
+    return 0;
+}
+
+int wmain(int argc, wchar_t **argv) {
+    g_main_argc = argc;
+    g_main_argv = argv;
+
+    if (argc <= 1) return run_monitor(argc, argv, 1, false);
+
+    const wchar_t *cmd = argv[1];
+    if (!wcscmp(cmd, L"--help") || !wcscmp(cmd, L"-h") || !wcscmp(cmd, L"help")) {
+        print_usage();
+        return 0;
+    }
+    if (!wcscmp(cmd, L"run")) return run_monitor(argc, argv, 2, false);
+    if (!wcscmp(cmd, L"install")) return command_install(argc, argv);
+    if (!wcscmp(cmd, L"start")) return command_start();
+    if (!wcscmp(cmd, L"stop")) return command_stop();
+    if (!wcscmp(cmd, L"restart")) {
+        int rc = command_stop();
+        if (rc != 0 && rc != 5) return rc;
+        return command_start();
+    }
+    if (!wcscmp(cmd, L"status")) return command_status();
+    if (!wcscmp(cmd, L"uninstall")) return command_uninstall();
+    if (!wcscmp(cmd, L"logs")) return command_logs();
+    if (!wcscmp(cmd, L"service-run")) return command_service_run();
+
+    /* Backward compatibility: options without `run` still start interactively. */
+    if (cmd[0] == L'-') return run_monitor(argc, argv, 1, false);
+
+    fwprintf(stderr, L"Unknown command: %ls\n\n", cmd);
+    print_usage();
+    return 2;
 }

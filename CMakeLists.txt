@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(WinFreezeTrace VERSION 0.1.0 LANGUAGES C)
+project(WinFreezeTrace VERSION 0.2.0 LANGUAGES C)
 
 if(NOT WIN32)
     message(FATAL_ERROR "WinFreezeTrace targets Windows only.")
