@@ -1,40 +1,82 @@
 # WinFreezeTrace
 
-Native Windows C black-box recorder for intermittent freezes / storage stalls.
+A lightweight native Windows background monitor for capturing system performance data around freezes, hangs, storage stalls, and unexplained system slowdowns.
 
-Version: **0.2.1**
+WinFreezeTrace runs continuously as a Windows service and keeps a rolling history of system metrics. When abnormal disk latency, queue depth, or collector stalls are detected, it preserves diagnostic data around the event for later analysis.
 
-## Global CLI + background service
+Written in C with no external runtime dependencies.
 
-`install` now installs WinFreezeTrace like a normal command-line tool:
+## Features
 
-- copies the executable to `C:\Program Files\WinFreezeTrace\winfreezetrace.exe`
-- adds `C:\Program Files\WinFreezeTrace` to the **Machine PATH** using the Windows Registry API
-- installs the `WinFreezeTrace` Windows Service
-- configures the service as **Automatic** at Windows boot
-- starts the service immediately
-- keeps background service logs under `%ProgramData%\WinFreezeTrace\logs`
+* Native C implementation
+* Runs as a Windows Service
+* Starts automatically with Windows
+* Global `winfreezetrace` CLI
+* Low-overhead 500 ms sampling
+* Rolling log with bounded disk usage
+* In-memory ring buffer
+* Automatic freeze/stall detection
+* Per-physical-disk performance counters
+* CPU, DPC, interrupt, memory, and paging metrics
+* Process I/O monitoring
+* Collector heartbeat monitoring
+* Windows Event Log correlation
+* Automatic service recovery after crashes
+* No filesystem repair or disk modification
 
-After installation, open a **new** CMD or PowerShell window. You can then call it from any directory just like `cargo`, `python`, `pip`, or `gradle`:
+## Metrics
 
-```bat
-winfreezetrace status
-winfreezetrace logs
-winfreezetrace restart
-```
+WinFreezeTrace records:
 
-The PATH is changed system-wide. An already-open CMD cannot have its parent environment modified by a child process, so a new terminal is required once after install/uninstall.
+### System
 
-## Build with Visual Studio / MSVC
+* CPU usage
+* DPC time
+* Interrupt time
+* Available memory
+* Paging activity
+* Process count
+* Thread count
+* System uptime
 
-From a Developer Command Prompt or a terminal with Visual Studio Build Tools installed:
+### Physical disks
+
+* Read latency
+* Write latency
+* Disk queue length
+* Read/write throughput
+* IOPS
+* Disk busy percentage
+
+### Processes
+
+* Process I/O activity
+* High-I/O processes
+
+### Monitor health
+
+* Collector heartbeat
+* Sampling gaps
+* PDH query duration
+* Process scan duration
+* File write duration
+
+This helps distinguish an application slowdown from a storage stall, driver/kernel delay, or a broader system freeze.
+
+## Requirements
+
+* Windows 10 or Windows 11
+* CMake
+* Visual Studio / MSVC Build Tools
+
+## Build
 
 ```bat
 cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
-Executable:
+The executable will be available at:
 
 ```text
 build\Release\WinFreezeTrace.exe
@@ -42,35 +84,35 @@ build\Release\WinFreezeTrace.exe
 
 ## Install
 
-Open **CMD as Administrator** from the project directory and run:
+Open CMD or PowerShell as Administrator:
 
 ```bat
 build\Release\WinFreezeTrace.exe install
 ```
 
-You do **not** need to manually copy the EXE anywhere.
-
-Then close that terminal and open a new CMD/PowerShell:
-
-```bat
-winfreezetrace status
-```
-
-You can verify command discovery with:
-
-```bat
-where winfreezetrace
-```
-
-Expected path:
+WinFreezeTrace installs itself to:
 
 ```text
 C:\Program Files\WinFreezeTrace\winfreezetrace.exe
 ```
 
-## Global CLI commands
+and adds the directory to the system `PATH`.
+
+Open a new terminal after installation.
+
+You can then run:
 
 ```bat
+winfreezetrace status
+```
+
+from any directory.
+
+The Windows service is configured to start automatically during boot.
+
+## CLI
+
+```text
 winfreezetrace status
 winfreezetrace start
 winfreezetrace stop
@@ -80,9 +122,23 @@ winfreezetrace uninstall
 winfreezetrace --help
 ```
 
-`install`, `start`, `stop`, `restart`, and `uninstall` can require an Administrator terminal because they control Windows Service configuration.
+`status`, `logs`, and help commands can be used without administrator privileges.
 
-## Install/update with custom monitor settings
+Commands that modify the Windows service require an elevated terminal.
+
+## Default Configuration
+
+```text
+Sampling interval       500 ms
+Ring buffer             30 minutes
+Pre-trigger history      5 minutes
+Post-trigger capture     5 minutes
+Disk latency trigger   500 ms
+Disk queue trigger       10
+Collector gap trigger     2 seconds
+```
+
+Custom values can be specified during installation:
 
 ```bat
 WinFreezeTrace.exe install ^
@@ -94,147 +150,85 @@ WinFreezeTrace.exe install ^
   --queue 10
 ```
 
-After the first installation, an update can also be run from a newly-built EXE. `install` will stop the old service before replacing the installed binary, update its configuration, and start it again.
+Running `install` again updates the existing service configuration and restarts it.
 
-Custom service log path:
+## Logs
 
-```bat
-WinFreezeTrace.exe install --log-dir C:\WinFreezeTraceLogs
-```
-
-## Background behavior
-
-The service:
-
-- starts automatically at Windows boot
-- does not require user login
-- has no console window while monitoring
-- runs independently of the CLI terminal
-- restarts after an unexpected service failure
-
-Default service logs:
+Logs are stored in:
 
 ```text
 C:\ProgramData\WinFreezeTrace\logs
 ```
 
-Print the path at any time:
+Open the log directory with:
 
 ```bat
 winfreezetrace logs
 ```
 
-## Interactive / portable mode
-
-The executable can still be used without installing it:
-
-```bat
-WinFreezeTrace.exe
-```
-
-or:
-
-```bat
-WinFreezeTrace.exe run
-```
-
-With options:
-
-```bat
-WinFreezeTrace.exe run --interval 500 --ring-minutes 30
-```
-
-Interactive mode defaults to `./logs`; service mode defaults to `%ProgramData%\WinFreezeTrace\logs`.
-
-## What it records
-
-Every 500 ms by default:
-
-- CPU total
-- DPC time
-- Interrupt time
-- Available RAM / Pages/sec
-- process/thread count and uptime
-- every `PhysicalDisk` PDH instance:
-  - Avg. Disk sec/Read
-  - Avg. Disk sec/Write
-  - Current Disk Queue Length
-  - Disk Bytes/sec
-  - Disk Transfers/sec
-  - % Disk Time
-- top processes by read/write transfer rate
-- collector call duration and sample gap
-
-A separate watchdog thread checks the collector heartbeat. If the collector disappears for 2+ seconds, `watchdog.log` records the stage that was active, such as `pdh_collect`, `process_scan`, or `file_write`.
-
-## Trigger behavior
-
-Default trigger conditions:
-
-- any disk read/write latency >= 500 ms
-- any disk queue >= 10
-- collector heartbeat gap >= 2 seconds
-
-A trigger creates:
+Typical output:
 
 ```text
-logs/event-YYYY-MM-DD_HH-MM-SS-mmm/
-  metrics.csv
-  summary.txt
-  eventlog.xml
+logs\
+├── rolling.csv
+├── rolling.prev.csv
+├── watchdog.log
+├── errors.log
+└── event-YYYY-MM-DD_HH-MM-SS-mmm\
+    ├── metrics.csv
+    ├── summary.txt
+    └── eventlog.xml
 ```
 
-`metrics.csv` includes up to 5 minutes before the trigger from the in-memory ring buffer and 5 minutes after it.
+### `rolling.csv`
 
-`eventlog.xml` exports relevant System log events around the trigger for providers such as disk, storahci, Ntfs, WHEA-Logger, Display, nvlddmkm, and Kernel-Power when present.
+Continuously records recent performance metrics.
 
-## Hard-reset survivability
+The rolling log has a bounded size so WinFreezeTrace can remain active for long periods without continuously consuming disk space.
 
-`rolling.csv` is continuously written and flushed roughly every 2 seconds. It rotates at 32 MiB and keeps `rolling.prev.csv`, so normal long-running capture is capped around 64 MiB plus event folders.
+### `watchdog.log`
 
-If Windows hard-freezes before an event can finish, preserve:
+Records collector heartbeat information and sampling stalls.
+
+A gap here can be useful when the system becomes too unresponsive for normal performance queries to complete.
+
+### Event directories
+
+When an abnormal condition is detected, WinFreezeTrace preserves metrics from before and after the trigger in a separate event directory.
+
+Relevant Windows Event Log entries are also collected when possible.
+
+## Event Detection
+
+An event can be triggered by conditions such as:
 
 ```text
-rolling.csv
-rolling.prev.csv
-watchdog.log
-errors.log
-event-*/
+Disk latency >= 500 ms
+Disk queue   >= 10
+Collector heartbeat gap >= 2 seconds
 ```
 
-## Service recovery
+The purpose of these triggers is not to declare a component faulty. They preserve the surrounding timeline so the actual cause can be investigated afterward.
 
-The installed service uses Windows Service Recovery:
+For example:
 
-- first unexpected failure: restart after 5 seconds
-- second: restart after 10 seconds
-- third: restart after 30 seconds
-- failure count resets after one day
+```text
+T - 30s   PhysicalDisk latency begins increasing
+T - 10s   Disk queue rises
+T -  3s   DPC activity spikes
+T         Desktop stops responding
+```
 
-A normal `winfreezetrace stop` is not an unexpected crash.
+This is generally more useful than inspecting Task Manager after the system has already recovered.
 
 ## Uninstall
 
-From Administrator CMD/PowerShell:
+Open an elevated terminal:
 
 ```bat
 winfreezetrace uninstall
 ```
 
-This removes:
+This removes the Windows service, installed CLI, and PATH entry.
 
-- the Windows Service
-- the Machine PATH entry
-- the installed CLI executable
-
-If `uninstall` is currently executing from the installed binary, Windows schedules that EXE for deletion at the next reboot because a running executable cannot safely delete itself.
-
-Diagnostic logs are intentionally kept.
-
-## Important notes
-
-- No CHKDSK, filesystem repair, SMART writes, format, or disk configuration changes are performed.
-- Machine PATH is edited through the Registry API rather than `setx`, avoiding `setx` PATH truncation/expansion issues.
-- Service mode runs as `LocalSystem`.
-- WPR/ETW automatic recording is still intentionally separate so this monitor remains lightweight.
-- `PhysicalDisk(*)` names are PDH instance names such as `0 C:` or `_Total`.
+Diagnostic logs are preserved.
