@@ -4,7 +4,7 @@ WinFreezeTrace is designed to answer five questions after a Windows freeze/hang:
 
 1. **When?** Exact local trigger time plus a rolling pre-trigger timeline.
 2. **Where?** Foreground process/window, its modules, wait chains, and a small minidump.
-3. **What happened?** CPU, DPC, interrupt, memory commit, disk queue/I/O rate, processor queue, app responsiveness, and process snapshot.
+3. **What happened?** CPU (user/kernel), DPC/interrupt rate, context switches, memory/commit/paging, disk queue/latency/IOPS, processor queue, app responsiveness, and a detailed process snapshot.
 4. **How did it develop?** The last 180 seconds are held in RAM and flushed only when a trigger occurs.
 5. **Why is it likely happening?** A rule-based summary correlates deadlocks, WHEA, storage/GPU events, memory pressure, DPC/interrupt spikes, CPU starvation, and application-only hangs.
 
@@ -30,14 +30,19 @@ Long delays over 60 seconds are ignored as automatic scheduler-stall triggers to
 
 - `summary.txt` — trigger, evidence, and likely-cause analysis with confidence labels.
 - `timeline.csv` — rolling pre-trigger metrics from RAM.
-- `processes.csv` — trigger-time process snapshot sorted by short-window CPU usage; also memory, I/O totals, handles, path.
+- `processes.csv` — trigger-time process snapshot sorted by short-window CPU usage; also threads, working/peak/private memory, page faults, I/O operations/bytes, handles, start time, and path.
 - `waitchains.txt` — Wait Chain Traversal for every thread of the foreground process; highlights circular waits/deadlocks.
 - `threads.csv` — target thread IDs, priorities, and accumulated kernel/user CPU time.
 - `modules.csv` — loaded DLL/module map for the foreground process.
 - `target.dmp` — small minidump focused on threads/process state. Open in WinDbg for exact stacks/symbols. Created only on trigger.
-- `events_system.xml` — last 5 minutes of System Critical/Error/Warning events.
-- `events_application.xml` — last 5 minutes of Application Critical/Error/Warning events.
-- `drives.csv` — volume free-space snapshot.
+- `events_system.xml` — last 30 minutes of System Critical/Error/Warning events.
+- `events_application.xml` — last 30 minutes of Application Critical/Error/Warning events.
+- `events_performance.xml` — recent Windows Diagnostics-Performance events when the channel is accessible.
+- `drives.csv` — volume label, filesystem, cluster size, capacity, and free-space snapshot.
+- `system_info.txt` — Windows build, computer/BIOS model, CPU, memory/commit, uptime, and power state.
+- `loaded_drivers.csv` — kernel drivers loaded at trigger time.
+- `storage_devices.csv` — physical disk model, firmware, serial, bus type, and command-queueing support.
+- `displays.csv` — display adapters, hardware IDs, registry keys, and active-state flags.
 
 Reports are stored by default under:
 
@@ -50,6 +55,8 @@ Reports are stored by default under:
 - **Storage stall:** storport/storahci/stornvme/disk events and/or high disk queue without CPU saturation.
 - **GPU/driver reset:** display-driver events near the incident.
 - **Memory pressure:** commit or memory load near exhaustion.
+- **Hard paging:** sustained pages read from disk, often caused by memory pressure or a slow pagefile device.
+- **Storage latency:** response time over 100 ms, together with queue depth, throughput, and IOPS.
 - **Driver interrupt latency:** high DPC or interrupt CPU time.
 - **CPU starvation:** CPU near 100% plus a processor queue longer than the logical CPU count.
 - **App-only hang:** foreground app stops responding while the watchdog remains schedulable.

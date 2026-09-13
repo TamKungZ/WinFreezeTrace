@@ -1,14 +1,14 @@
 #define _CRT_SECURE_NO_WARNINGS
-#define UNICODE
-#define _UNICODE
 #include <windows.h>
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <pdh.h>
+#include <pdhmsg.h>
 #include <winevt.h>
 #include <wct.h>
 #include <dbghelp.h>
 #include <shlobj.h>
+#include <winioctl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,15 +51,30 @@ typedef struct Config {
 
 typedef struct Metrics {
     double cpu;
+    double cpu_user;
+    double cpu_privileged;
     double dpc;
     double interrupt;
+    double interrupts_per_sec;
+    double dpcs_queued_per_sec;
+    double context_switches_per_sec;
     double disk_queue;
     double disk_read_bps;
     double disk_write_bps;
+    double disk_iops;
+    double disk_latency_ms;
     double commit_pct;
     double proc_queue;
+    double pages_input_per_sec;
+    double page_reads_per_sec;
+    double page_faults_per_sec;
+    double pool_nonpaged_mb;
+    double system_handles;
+    double system_threads;
+    double system_processes;
     DWORD mem_load;
     uint64_t avail_mb;
+    uint64_t commit_avail_mb;
 } Metrics;
 
 typedef struct Sample {
@@ -77,13 +92,23 @@ typedef struct Sample {
 typedef struct PdhState {
     PDH_HQUERY q;
     PDH_HCOUNTER cpu;
+    PDH_HCOUNTER cpu_user;
+    PDH_HCOUNTER cpu_privileged;
     PDH_HCOUNTER dpc;
     PDH_HCOUNTER intr;
+    PDH_HCOUNTER intr_rate;
+    PDH_HCOUNTER dpc_rate;
+    PDH_HCOUNTER context_switches;
     PDH_HCOUNTER diskq;
     PDH_HCOUNTER readbps;
     PDH_HCOUNTER writebps;
+    PDH_HCOUNTER disk_iops;
+    PDH_HCOUNTER disk_latency;
     PDH_HCOUNTER commit;
     PDH_HCOUNTER procq;
+    PDH_HCOUNTER pages_input;
+    PDH_HCOUNTER page_reads;
+    PDH_HCOUNTER page_faults;
     BOOL ok;
 } PdhState;
 
@@ -98,10 +123,16 @@ typedef struct ProcRow {
     double cpu_system_pct;
     double cpu_one_core_pct;
     SIZE_T working_set;
+    SIZE_T peak_working_set;
     SIZE_T private_bytes;
+    DWORD page_faults;
     ULONGLONG read_bytes;
     ULONGLONG write_bytes;
+    ULONGLONG read_ops;
+    ULONGLONG write_ops;
     DWORD handles;
+    DWORD threads;
+    ULONGLONG created_utc;
     WCHAR path[MAX_PATH_W];
 } ProcRow;
 
@@ -141,6 +172,16 @@ static void csv_w(FILE *f, const WCHAR *s) {
                 WCHAR tmp[2] = {*p, 0};
                 write_utf8(f, tmp);
             }
+        }
+    }
+    fputc('"', f);
+}
+
+static void csv_a(FILE *f, const char *s) {
+    fputc('"', f);
+    if (s) {
+        for (const char *p = s; *p; ++p) {
+            if (*p == '"') fputs("\"\"", f); else fputc((unsigned char)*p, f);
         }
     }
     fputc('"', f);
@@ -221,36 +262,55 @@ static BOOL pdh_init(PdhState *p) {
     ZeroMemory(p, sizeof(*p));
     if (PdhOpenQueryW(NULL, 0, &p->q) != ERROR_SUCCESS) return FALSE;
     pdh_add(p->q, L"\\Processor(_Total)\\% Processor Time", &p->cpu);
+    pdh_add(p->q, L"\\Processor(_Total)\\% User Time", &p->cpu_user);
+    pdh_add(p->q, L"\\Processor(_Total)\\% Privileged Time", &p->cpu_privileged);
     pdh_add(p->q, L"\\Processor(_Total)\\% DPC Time", &p->dpc);
     pdh_add(p->q, L"\\Processor(_Total)\\% Interrupt Time", &p->intr);
+    pdh_add(p->q, L"\\Processor(_Total)\\Interrupts/sec", &p->intr_rate);
+    pdh_add(p->q, L"\\Processor(_Total)\\DPCs Queued/sec", &p->dpc_rate);
+    pdh_add(p->q, L"\\System\\Context Switches/sec", &p->context_switches);
     pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Avg. Disk Queue Length", &p->diskq);
     pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", &p->readbps);
     pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", &p->writebps);
+    pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Disk Transfers/sec", &p->disk_iops);
+    pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Avg. Disk sec/Transfer", &p->disk_latency);
     pdh_add(p->q, L"\\Memory\\% Committed Bytes In Use", &p->commit);
+    pdh_add(p->q, L"\\Memory\\Pages Input/sec", &p->pages_input);
+    pdh_add(p->q, L"\\Memory\\Page Reads/sec", &p->page_reads);
+    pdh_add(p->q, L"\\Memory\\Page Faults/sec", &p->page_faults);
     pdh_add(p->q, L"\\System\\Processor Queue Length", &p->procq);
     PdhCollectQueryData(p->q);
     p->ok = TRUE;
     return TRUE;
 }
 
-static void pdh_close(PdhState *p) {
-    if (p->q) PdhCloseQuery(p->q);
-    ZeroMemory(p, sizeof(*p));
-}
-
 static void collect_metrics(PdhState *p, Metrics *m) {
     ZeroMemory(m, sizeof(*m));
-    m->cpu = m->dpc = m->interrupt = m->disk_queue = -1.0;
-    m->disk_read_bps = m->disk_write_bps = m->commit_pct = m->proc_queue = -1.0;
+    m->cpu = m->cpu_user = m->cpu_privileged = m->dpc = m->interrupt = -1.0;
+    m->interrupts_per_sec = m->dpcs_queued_per_sec = m->context_switches_per_sec = -1.0;
+    m->disk_queue = m->disk_read_bps = m->disk_write_bps = m->disk_iops = m->disk_latency_ms = -1.0;
+    m->commit_pct = m->proc_queue = m->pages_input_per_sec = m->page_reads_per_sec = -1.0;
+    m->page_faults_per_sec = m->pool_nonpaged_mb = m->system_handles = m->system_threads = m->system_processes = -1.0;
     if (p->ok && PdhCollectQueryData(p->q) == ERROR_SUCCESS) {
         m->cpu = pdh_value(p->cpu);
+        m->cpu_user = pdh_value(p->cpu_user);
+        m->cpu_privileged = pdh_value(p->cpu_privileged);
         m->dpc = pdh_value(p->dpc);
         m->interrupt = pdh_value(p->intr);
+        m->interrupts_per_sec = pdh_value(p->intr_rate);
+        m->dpcs_queued_per_sec = pdh_value(p->dpc_rate);
+        m->context_switches_per_sec = pdh_value(p->context_switches);
         m->disk_queue = pdh_value(p->diskq);
         m->disk_read_bps = pdh_value(p->readbps);
         m->disk_write_bps = pdh_value(p->writebps);
+        m->disk_iops = pdh_value(p->disk_iops);
+        double latency_sec = pdh_value(p->disk_latency);
+        m->disk_latency_ms = latency_sec < 0.0 ? -1.0 : latency_sec * 1000.0;
         m->commit_pct = pdh_value(p->commit);
         m->proc_queue = pdh_value(p->procq);
+        m->pages_input_per_sec = pdh_value(p->pages_input);
+        m->page_reads_per_sec = pdh_value(p->page_reads);
+        m->page_faults_per_sec = pdh_value(p->page_faults);
     }
     MEMORYSTATUSEX ms;
     ZeroMemory(&ms, sizeof(ms));
@@ -258,6 +318,14 @@ static void collect_metrics(PdhState *p, Metrics *m) {
     if (GlobalMemoryStatusEx(&ms)) {
         m->mem_load = ms.dwMemoryLoad;
         m->avail_mb = ms.ullAvailPhys / (1024ull * 1024ull);
+        m->commit_avail_mb = ms.ullAvailPageFile / (1024ull * 1024ull);
+    }
+    PERFORMANCE_INFORMATION pi; ZeroMemory(&pi, sizeof(pi)); pi.cb = sizeof(pi);
+    if (GetPerformanceInfo(&pi, sizeof(pi))) {
+        m->pool_nonpaged_mb = (double)pi.KernelNonpaged * (double)pi.PageSize / 1048576.0;
+        m->system_handles = (double)pi.HandleCount;
+        m->system_threads = (double)pi.ThreadCount;
+        m->system_processes = (double)pi.ProcessCount;
     }
 }
 
@@ -307,17 +375,20 @@ static void write_timeline(const WCHAR *dir, const Sample *ring, int ring_count,
     _snwprintf(path, _countof(path), L"%ls\\timeline.csv", dir);
     FILE *f = _wfopen(path, L"wb");
     if (!f) return;
-    fputs("time,wake_late_ms,cpu_pct,dpc_pct,interrupt_pct,disk_queue,disk_read_Bps,disk_write_Bps,commit_pct,mem_load_pct,avail_mem_MB,processor_queue,fg_pid,fg_tid,fg_hung,fg_exe,fg_class,fg_title\r\n", f);
+    fputs("time,wake_late_ms,cpu_pct,cpu_user_pct,cpu_privileged_pct,dpc_pct,interrupt_pct,interrupts_per_sec,dpcs_queued_per_sec,context_switches_per_sec,disk_queue,disk_read_Bps,disk_write_Bps,disk_IOPS,disk_latency_ms,commit_pct,mem_load_pct,avail_mem_MB,commit_avail_MB,pages_input_per_sec,page_reads_per_sec,page_faults_per_sec,pool_nonpaged_MB,processor_queue,system_handles,system_threads,system_processes,fg_pid,fg_tid,fg_hung,fg_exe,fg_class,fg_title\r\n", f);
     int start = (ring_head - ring_count + MAX_RING) % MAX_RING;
     for (int i = 0; i < ring_count; ++i) {
         const Sample *s = &ring[(start + i) % MAX_RING];
-        fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u.%03u,%d,%.2f,%.2f,%.2f,%.3f,%.0f,%.0f,%.2f,%lu,%llu,%.2f,%lu,%lu,%d,",
+        fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u.%03u,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.0f,%.0f,%.3f,%.0f,%.0f,%.1f,%.3f,%.2f,%lu,%llu,%llu,%.1f,%.1f,%.1f,%.1f,%.2f,%.0f,%.0f,%.0f,%lu,%lu,%d,",
             s->ts.wYear, s->ts.wMonth, s->ts.wDay,
             s->ts.wHour, s->ts.wMinute, s->ts.wSecond, s->ts.wMilliseconds,
-            s->wake_late_ms, s->m.cpu, s->m.dpc, s->m.interrupt,
-            s->m.disk_queue, s->m.disk_read_bps, s->m.disk_write_bps,
+            s->wake_late_ms, s->m.cpu, s->m.cpu_user, s->m.cpu_privileged, s->m.dpc, s->m.interrupt,
+            s->m.interrupts_per_sec, s->m.dpcs_queued_per_sec, s->m.context_switches_per_sec,
+            s->m.disk_queue, s->m.disk_read_bps, s->m.disk_write_bps, s->m.disk_iops, s->m.disk_latency_ms,
             s->m.commit_pct, (unsigned long)s->m.mem_load,
-            (unsigned long long)s->m.avail_mb, s->m.proc_queue,
+            (unsigned long long)s->m.avail_mb, (unsigned long long)s->m.commit_avail_mb,
+            s->m.pages_input_per_sec, s->m.page_reads_per_sec, s->m.page_faults_per_sec, s->m.pool_nonpaged_mb,
+            s->m.proc_queue, s->m.system_handles, s->m.system_threads, s->m.system_processes,
             (unsigned long)s->fg_pid, (unsigned long)s->fg_tid, s->fg_hung ? 1 : 0);
         csv_w(f, base_name(s->fg_path)); fputc(',', f);
         csv_w(f, s->fg_class); fputc(',', f);
@@ -386,6 +457,7 @@ static void write_process_snapshot(const WCHAR *dir) {
                 if (rn >= MAX_PROCS) break;
                 ProcRow *r = &rows[rn];
                 r->pid = pe.th32ProcessID; r->ppid = pe.th32ParentProcessID;
+                r->threads = pe.cntThreads;
                 _snwprintf(r->path, _countof(r->path), L"%ls", pe.szExeFile);
                 HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, r->pid);
                 if (h) {
@@ -393,7 +465,8 @@ static void write_process_snapshot(const WCHAR *dir) {
                     if (QueryFullProcessImageNameW(h, 0, full, &cc)) _snwprintf(r->path, _countof(r->path), L"%ls", full);
                     FILETIME c,e,k,u;
                     if (GetProcessTimes(h, &c, &e, &k, &u)) {
-                        ULARGE_INTEGER ku, uu; ku.LowPart=k.dwLowDateTime; ku.HighPart=k.dwHighDateTime; uu.LowPart=u.dwLowDateTime; uu.HighPart=u.dwHighDateTime;
+                        ULARGE_INTEGER cu, ku, uu; cu.LowPart=c.dwLowDateTime; cu.HighPart=c.dwHighDateTime; ku.LowPart=k.dwLowDateTime; ku.HighPart=k.dwHighDateTime; uu.LowPart=u.dwLowDateTime; uu.HighPart=u.dwHighDateTime;
+                        r->created_utc = cu.QuadPart;
                         ULONGLONG now = ku.QuadPart + uu.QuadPart, old = 0;
                         if (find_baseline(base, bn, r->pid, &old) && now >= old) {
                             double one = (double)(now - old) / ((double)window_ms * 10000.0) * 100.0;
@@ -403,9 +476,13 @@ static void write_process_snapshot(const WCHAR *dir) {
                     }
                     PROCESS_MEMORY_COUNTERS_EX pmc; ZeroMemory(&pmc, sizeof(pmc)); pmc.cb = sizeof(pmc);
                     if (GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-                        r->working_set = pmc.WorkingSetSize; r->private_bytes = pmc.PrivateUsage;
+                        r->working_set = pmc.WorkingSetSize; r->peak_working_set = pmc.PeakWorkingSetSize;
+                        r->private_bytes = pmc.PrivateUsage; r->page_faults = pmc.PageFaultCount;
                     }
-                    IO_COUNTERS io; if (GetProcessIoCounters(h, &io)) { r->read_bytes = io.ReadTransferCount; r->write_bytes = io.WriteTransferCount; }
+                    IO_COUNTERS io; if (GetProcessIoCounters(h, &io)) {
+                        r->read_bytes = io.ReadTransferCount; r->write_bytes = io.WriteTransferCount;
+                        r->read_ops = io.ReadOperationCount; r->write_ops = io.WriteOperationCount;
+                    }
                     GetProcessHandleCount(h, &r->handles);
                     CloseHandle(h);
                 }
@@ -419,17 +496,23 @@ static void write_process_snapshot(const WCHAR *dir) {
     WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\processes.csv", dir);
     FILE *f = _wfopen(path, L"wb");
     if (f) {
-        fputs("pid,ppid,cpu_system_pct,cpu_one_core_pct,working_set_MB,private_MB,read_MB_total,write_MB_total,handles,path\r\n", f);
+        fputs("pid,ppid,threads,cpu_system_pct,cpu_one_core_pct,working_set_MB,peak_working_set_MB,private_MB,page_faults_total,read_ops_total,write_ops_total,read_MB_total,write_MB_total,handles,created_utc_filetime,path\r\n", f);
         for (int i = 0; i < rn; ++i) {
             ProcRow *r = &rows[i];
-            fprintf(f, "%lu,%lu,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%lu,",
+            fprintf(f, "%lu,%lu,%lu,%.2f,%.2f,%.1f,%.1f,%.1f,%lu,%llu,%llu,%.1f,%.1f,%lu,%llu,",
                 (unsigned long)r->pid, (unsigned long)r->ppid,
+                (unsigned long)r->threads,
                 r->cpu_system_pct, r->cpu_one_core_pct,
                 (double)r->working_set / 1048576.0,
+                (double)r->peak_working_set / 1048576.0,
                 (double)r->private_bytes / 1048576.0,
+                (unsigned long)r->page_faults,
+                (unsigned long long)r->read_ops,
+                (unsigned long long)r->write_ops,
                 (double)r->read_bytes / 1048576.0,
                 (double)r->write_bytes / 1048576.0,
-                (unsigned long)r->handles);
+                (unsigned long)r->handles,
+                (unsigned long long)r->created_utc);
             csv_w(f, r->path); fputs("\r\n", f);
         }
         fclose(f);
@@ -618,7 +701,7 @@ static DWORD export_events_channel(const WCHAR *dir, const WCHAR *channel, const
 static void write_drives(const WCHAR *dir) {
     WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\drives.csv", dir);
     FILE *f = _wfopen(path, L"wb"); if (!f) return;
-    fputs("drive,type,total_GB,free_GB,free_pct\r\n", f);
+    fputs("drive,type,volume_label,filesystem,total_GB,free_GB,free_pct,bytes_per_cluster\r\n", f);
     DWORD mask = GetLogicalDrives();
     for (int i = 0; i < 26; ++i) {
         if (!(mask & (1u << i))) continue;
@@ -626,11 +709,138 @@ static void write_drives(const WCHAR *dir) {
         UINT type = GetDriveTypeW(root);
         ULARGE_INTEGER freeAvail, total, freeTotal;
         if (GetDiskFreeSpaceExW(root, &freeAvail, &total, &freeTotal)) {
+            WCHAR label[256] = {0}, fs[64] = {0};
+            DWORD serial = 0, max_component = 0, fs_flags = 0;
+            DWORD sectors_per_cluster = 0, bytes_per_sector = 0, free_clusters = 0, total_clusters = 0;
+            GetVolumeInformationW(root, label, _countof(label), &serial, &max_component, &fs_flags, fs, _countof(fs));
+            GetDiskFreeSpaceW(root, &sectors_per_cluster, &bytes_per_sector, &free_clusters, &total_clusters);
             double pct = total.QuadPart ? (double)freeTotal.QuadPart * 100.0 / (double)total.QuadPart : 0.0;
-            fprintf(f, "%c,%u,%.2f,%.2f,%.2f\r\n", 'A'+i, type,
+            fprintf(f, "%c,%u,", 'A'+i, type); csv_w(f, label); fputc(',', f); csv_w(f, fs);
+            fprintf(f, ",%.2f,%.2f,%.2f,%llu\r\n",
                 (double)total.QuadPart / 1073741824.0,
-                (double)freeTotal.QuadPart / 1073741824.0, pct);
+                (double)freeTotal.QuadPart / 1073741824.0, pct,
+                (unsigned long long)sectors_per_cluster * bytes_per_sector);
         }
+    }
+    fclose(f);
+}
+
+static void write_reg_string(FILE *f, HKEY root, const WCHAR *key, const WCHAR *name, const char *label) {
+    WCHAR value[1024] = {0}; DWORD bytes = sizeof(value), type = 0;
+    if (RegGetValueW(root, key, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, &type, value, &bytes) == ERROR_SUCCESS) {
+        fprintf(f, "%s: ", label); write_utf8(f, value); fputs("\r\n", f);
+    }
+}
+
+static const char *arch_name(WORD arch) {
+    switch (arch) {
+        case PROCESSOR_ARCHITECTURE_AMD64: return "x64";
+        case PROCESSOR_ARCHITECTURE_ARM64: return "ARM64";
+        case PROCESSOR_ARCHITECTURE_INTEL: return "x86";
+        case PROCESSOR_ARCHITECTURE_ARM: return "ARM";
+        default: return "unknown";
+    }
+}
+
+static void write_system_info(const WCHAR *dir) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\system_info.txt", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    WCHAR computer[256] = {0}, user[256] = {0}; DWORD nc = _countof(computer), nu = _countof(user);
+    GetComputerNameW(computer, &nc); GetUserNameW(user, &nu);
+    fputs("System snapshot\r\n===============\r\n", f);
+    fputs("Computer: ", f); write_utf8(f, computer); fputs("\r\nUser: ", f); write_utf8(f, user); fputs("\r\n", f);
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"ProductName", "Windows");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"DisplayVersion", "Display version");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"CurrentBuildNumber", "Build");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", L"ProcessorNameString", "CPU");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemManufacturer", "System manufacturer");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName", "System model");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"BIOSVendor", "BIOS vendor");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"BIOSVersion", "BIOS version");
+    write_reg_string(f, HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"BIOSReleaseDate", "BIOS date");
+    SYSTEM_INFO si; GetNativeSystemInfo(&si);
+    fprintf(f, "Architecture: %s\r\nLogical processors: %lu\r\nPage size: %lu bytes\r\n",
+        arch_name(si.wProcessorArchitecture), (unsigned long)si.dwNumberOfProcessors, (unsigned long)si.dwPageSize);
+    MEMORYSTATUSEX ms; ZeroMemory(&ms, sizeof(ms)); ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        fprintf(f, "Memory load: %lu%%\r\nPhysical memory: %.2f GB total, %.2f GB available\r\nCommit/pagefile: %.2f GB total, %.2f GB available\r\n",
+            (unsigned long)ms.dwMemoryLoad, (double)ms.ullTotalPhys / 1073741824.0, (double)ms.ullAvailPhys / 1073741824.0,
+            (double)ms.ullTotalPageFile / 1073741824.0, (double)ms.ullAvailPageFile / 1073741824.0);
+    }
+    ULONGLONG uptime_ms = GetTickCount64();
+    fprintf(f, "Uptime: %.2f hours (%llu ms)\r\n", (double)uptime_ms / 3600000.0, (unsigned long long)uptime_ms);
+    SYSTEM_POWER_STATUS ps;
+    if (GetSystemPowerStatus(&ps)) {
+        fprintf(f, "AC power: %s\r\nBattery: %s", ps.ACLineStatus == 1 ? "online" : (ps.ACLineStatus == 0 ? "offline" : "unknown"),
+            ps.BatteryLifePercent == 255 ? "unknown" : "");
+        if (ps.BatteryLifePercent != 255) fprintf(f, "%u%%", (unsigned)ps.BatteryLifePercent);
+        fputs("\r\n", f);
+    }
+    fclose(f);
+}
+
+static void write_loaded_drivers(const WCHAR *dir) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\loaded_drivers.csv", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    fputs("base,module,path\r\n", f);
+    LPVOID drivers[4096]; DWORD needed = 0;
+    if (EnumDeviceDrivers(drivers, sizeof(drivers), &needed)) {
+        DWORD count = needed / sizeof(drivers[0]); if (count > _countof(drivers)) count = _countof(drivers);
+        for (DWORD i = 0; i < count; ++i) {
+            WCHAR name[MAX_PATH_W] = {0}, driver_path[MAX_PATH_W] = {0};
+            GetDeviceDriverBaseNameW(drivers[i], name, _countof(name));
+            GetDeviceDriverFileNameW(drivers[i], driver_path, _countof(driver_path));
+            fprintf(f, "0x%p,", drivers[i]); csv_w(f, name); fputc(',', f); csv_w(f, driver_path); fputs("\r\n", f);
+        }
+    }
+    fclose(f);
+}
+
+static const char *descriptor_string(const BYTE *buf, DWORD bytes, DWORD offset) {
+    if (!offset || offset >= bytes) return "";
+    return (const char*)(buf + offset);
+}
+
+static void write_storage_devices(const WCHAR *dir) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\storage_devices.csv", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    fputs("physical_index,device_number,bus_type,removable,command_queueing,vendor,model,firmware,serial\r\n", f);
+    for (DWORD i = 0; i < 32; ++i) {
+        WCHAR device[64]; _snwprintf(device, _countof(device), L"\\\\.\\PhysicalDrive%lu", (unsigned long)i);
+        HANDLE h = CreateFileW(device, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        BYTE buf[4096]; ZeroMemory(buf, sizeof(buf));
+        STORAGE_PROPERTY_QUERY query; ZeroMemory(&query, sizeof(query)); query.PropertyId = StorageDeviceProperty; query.QueryType = PropertyStandardQuery;
+        DWORD got = 0;
+        if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query), buf, sizeof(buf), &got, NULL)
+                && got >= sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
+            STORAGE_DEVICE_DESCRIPTOR *d = (STORAGE_DEVICE_DESCRIPTOR*)buf;
+            STORAGE_DEVICE_NUMBER number; ZeroMemory(&number, sizeof(number)); DWORD got_number = 0;
+            DWORD device_number = i;
+            if (DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 0, &number, sizeof(number), &got_number, NULL)) device_number = number.DeviceNumber;
+            fprintf(f, "%lu,%lu,%u,%u,%u,", (unsigned long)i, (unsigned long)device_number,
+                (unsigned)d->BusType, (unsigned)d->RemovableMedia, (unsigned)d->CommandQueueing);
+            csv_a(f, descriptor_string(buf, got, d->VendorIdOffset)); fputc(',', f);
+            csv_a(f, descriptor_string(buf, got, d->ProductIdOffset)); fputc(',', f);
+            csv_a(f, descriptor_string(buf, got, d->ProductRevisionOffset)); fputc(',', f);
+            csv_a(f, descriptor_string(buf, got, d->SerialNumberOffset)); fputs("\r\n", f);
+        }
+        CloseHandle(h);
+    }
+    fclose(f);
+}
+
+static void write_displays(const WCHAR *dir) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\displays.csv", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    fputs("index,state_flags,device_name,description,device_id,registry_key\r\n", f);
+    for (DWORD i = 0; ; ++i) {
+        DISPLAY_DEVICEW d; ZeroMemory(&d, sizeof(d)); d.cb = sizeof(d);
+        if (!EnumDisplayDevicesW(NULL, i, &d, 0)) break;
+        fprintf(f, "%lu,0x%08lx,", (unsigned long)i, (unsigned long)d.StateFlags);
+        csv_w(f, d.DeviceName); fputc(',', f); csv_w(f, d.DeviceString); fputc(',', f);
+        csv_w(f, d.DeviceID); fputc(',', f); csv_w(f, d.DeviceKey); fputs("\r\n", f);
     }
     fclose(f);
 }
@@ -644,9 +854,18 @@ static void max_recent_metrics(const Sample *ring, int count, int head, Metrics 
         if (s->m.cpu > maxm->cpu) maxm->cpu = s->m.cpu;
         if (s->m.dpc > maxm->dpc) maxm->dpc = s->m.dpc;
         if (s->m.interrupt > maxm->interrupt) maxm->interrupt = s->m.interrupt;
+        if (s->m.interrupts_per_sec > maxm->interrupts_per_sec) maxm->interrupts_per_sec = s->m.interrupts_per_sec;
+        if (s->m.dpcs_queued_per_sec > maxm->dpcs_queued_per_sec) maxm->dpcs_queued_per_sec = s->m.dpcs_queued_per_sec;
+        if (s->m.context_switches_per_sec > maxm->context_switches_per_sec) maxm->context_switches_per_sec = s->m.context_switches_per_sec;
         if (s->m.disk_queue > maxm->disk_queue) maxm->disk_queue = s->m.disk_queue;
+        if (s->m.disk_latency_ms > maxm->disk_latency_ms) maxm->disk_latency_ms = s->m.disk_latency_ms;
+        if (s->m.disk_iops > maxm->disk_iops) maxm->disk_iops = s->m.disk_iops;
         if (s->m.commit_pct > maxm->commit_pct) maxm->commit_pct = s->m.commit_pct;
         if (s->m.proc_queue > maxm->proc_queue) maxm->proc_queue = s->m.proc_queue;
+        if (s->m.pages_input_per_sec > maxm->pages_input_per_sec) maxm->pages_input_per_sec = s->m.pages_input_per_sec;
+        if (s->m.page_reads_per_sec > maxm->page_reads_per_sec) maxm->page_reads_per_sec = s->m.page_reads_per_sec;
+        if (s->m.page_faults_per_sec > maxm->page_faults_per_sec) maxm->page_faults_per_sec = s->m.page_faults_per_sec;
+        if (s->m.pool_nonpaged_mb > maxm->pool_nonpaged_mb) maxm->pool_nonpaged_mb = s->m.pool_nonpaged_mb;
         if (s->m.mem_load > maxm->mem_load) maxm->mem_load = s->m.mem_load;
     }
 }
@@ -671,6 +890,8 @@ static void write_summary(const WCHAR *dir, const Config *cfg, TriggerReason rea
     fprintf(f, "Logical CPU: %lu\r\n", (unsigned long)si.dwNumberOfProcessors);
     fprintf(f, "Recent maxima: CPU %.1f%% | DPC %.1f%% | Interrupt %.1f%% | DiskQ %.2f | Commit %.1f%% | ProcQ %.1f | WakeLate %d ms\r\n",
         mx.cpu, mx.dpc, mx.interrupt, mx.disk_queue, mx.commit_pct, mx.proc_queue, max_late);
+    fprintf(f, "I/O and kernel maxima: Disk latency %.1f ms | Disk IOPS %.0f | Pages input/sec %.0f | Page reads/sec %.0f | Context switches/sec %.0f | Nonpaged pool %.1f MB\r\n",
+        mx.disk_latency_ms, mx.disk_iops, mx.pages_input_per_sec, mx.page_reads_per_sec, mx.context_switches_per_sec, mx.pool_nonpaged_mb);
     fprintf(f, "Wait-chain cycle: %s\r\nMinidump: %s\r\n", wait_cycle ? "YES" : "no", dump_ok ? "written" : (cfg->make_dump ? "not available" : "disabled"));
 
     fputs("\r\nLikely-cause analysis\r\n---------------------\r\n", f);
@@ -680,10 +901,14 @@ static void write_summary(const WCHAR *dir, const Config *cfg, TriggerReason rea
     if (event_flags & EVENTFLAG_STORAGE) { fputs("[HIGH/MED] Recent storage driver/disk events exist (storport/storahci/stornvme/disk). This can explain whole-system stalls. See events_system.xml.\r\n", f); ++findings; }
     if (event_flags & EVENTFLAG_DISPLAY) { fputs("[MED] Recent display/GPU-driver events exist. A GPU driver timeout/reset may look like a freeze. See events_system.xml.\r\n", f); ++findings; }
     if (event_flags & EVENTFLAG_APPHANG) { fputs("[MED] Windows logged an Application Hang near this incident. Correlate the app name/time with the foreground target.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_POWER) { fputs("[MED] A recent Kernel-Power or power-transition event exists. Check unexpected shutdowns, power delivery, sleep/resume, and firmware.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_NTFS) { fputs("[MED] A recent NTFS/volume-manager event exists. Check filesystem, volume, cable, and storage health.\r\n", f); ++findings; }
     if (mx.commit_pct >= 95.0 || mx.mem_load >= 97) { fputs("[MED] Memory/commit pressure was extreme before the incident. Paging or allocation stalls are plausible.\r\n", f); ++findings; }
     if (mx.dpc >= 20.0 || mx.interrupt >= 20.0) { fputs("[MED] DPC/interrupt CPU time spiked. This points toward a driver/device interrupt-latency problem.\r\n", f); ++findings; }
     if (mx.cpu >= 97.0 && mx.proc_queue > (double)si.dwNumberOfProcessors) { fputs("[MED] CPU saturation plus a long processor queue was observed. Scheduler starvation is plausible; check top entries in processes.csv.\r\n", f); ++findings; }
     if (mx.disk_queue >= 4.0 && mx.cpu < 90.0) { fputs("[MED] Disk queue was elevated without matching CPU saturation. Storage latency/queueing is plausible; correlate with storage events.\r\n", f); ++findings; }
+    if (mx.disk_latency_ms >= 100.0) { fputs("[MED] Storage response time exceeded 100 ms. This is direct evidence of slow or stalled I/O; inspect disk queue, paging, and storage events.\r\n", f); ++findings; }
+    if (mx.pages_input_per_sec >= 1000.0 || mx.page_reads_per_sec >= 250.0) { fputs("[MED] Heavy hard paging was observed. Memory pressure or slow pagefile I/O may be contributing to the freeze.\r\n", f); ++findings; }
     if (reason == TRIGGER_APP_HANG && max_late < (int)cfg->stall_ms) { fputs("[MED] The foreground app stopped responding while the watchdog itself kept scheduling normally. This favors an application-specific wait/deadlock over a whole-system freeze.\r\n", f); ++findings; }
     if (reason == TRIGGER_SCHEDULER_STALL && findings == 0) { fputs("[LOW] The watchdog was delayed but no strong CPU/memory/disk/event-log signature was captured. Suspect a low-level driver, firmware, GPU, storage, or transient scheduler stall. target.dmp helps only for the foreground app; a kernel ETW trace may be needed if this repeats.\r\n", f); ++findings; }
     if (!findings) fputs("[LOW] No single cause is strong enough from this capture. Use timeline.csv + processes.csv + waitchains.txt + Event Log correlation.\r\n", f);
@@ -697,7 +922,12 @@ static void write_summary(const WCHAR *dir, const Config *cfg, TriggerReason rea
     fputs("target.dmp          Small thread-focused minidump, when access allows.\r\n", f);
     fputs("events_system.xml   Recent System critical/error/warning events.\r\n", f);
     fputs("events_application.xml Recent Application critical/error/warning events.\r\n", f);
+    fputs("events_performance.xml Windows boot/shutdown/resume/performance diagnostics when accessible.\r\n", f);
     fputs("drives.csv          Free-space snapshot to spot critically full volumes.\r\n", f);
+    fputs("system_info.txt     OS/build, computer model, BIOS, CPU, memory, uptime, and power state.\r\n", f);
+    fputs("loaded_drivers.csv  Kernel drivers loaded at trigger time (paths may require elevation).\r\n", f);
+    fputs("storage_devices.csv Physical disk model, firmware, serial, bus type, and queueing support.\r\n", f);
+    fputs("displays.csv        Display adapters, device IDs, and active-state flags.\r\n", f);
     fclose(f);
 }
 
@@ -712,9 +942,14 @@ static void deep_capture(const Config *cfg, TriggerReason reason, const Sample *
     BOOL dump_ok = FALSE;
     if (cfg->make_dump) dump_ok = write_minidump(dir, trigger_sample->fg_pid);
     DWORD flags = 0;
-    flags |= export_events_channel(dir, L"System", L"events_system.xml", 5 * 60 * 1000);
-    flags |= export_events_channel(dir, L"Application", L"events_application.xml", 5 * 60 * 1000);
+    flags |= export_events_channel(dir, L"System", L"events_system.xml", 30 * 60 * 1000);
+    flags |= export_events_channel(dir, L"Application", L"events_application.xml", 30 * 60 * 1000);
+    flags |= export_events_channel(dir, L"Microsoft-Windows-Diagnostics-Performance/Operational", L"events_performance.xml", 60 * 60 * 1000);
     write_drives(dir);
+    write_system_info(dir);
+    write_loaded_drivers(dir);
+    write_storage_devices(dir);
+    write_displays(dir);
     write_summary(dir, cfg, reason, trigger_sample, ring, ring_count, ring_head, flags, cycle, dump_ok);
 }
 
@@ -804,7 +1039,4 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show) {
         }
     }
 
-    pdh_close(&pdh);
-    ReleaseMutex(singleton); CloseHandle(singleton);
-    return 0;
 }
