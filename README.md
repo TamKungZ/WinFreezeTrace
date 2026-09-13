@@ -1,234 +1,122 @@
-# WinFreezeTrace
+# WinFreezeTrace v2 — lightweight background freeze/hang recorder
 
-A lightweight native Windows background monitor for capturing system performance data around freezes, hangs, storage stalls, and unexplained system slowdowns.
+WinFreezeTrace is designed to answer five questions after a Windows freeze/hang:
 
-WinFreezeTrace runs continuously as a Windows service and keeps a rolling history of system metrics. When abnormal disk latency, queue depth, or collector stalls are detected, it preserves diagnostic data around the event for later analysis.
+1. **When?** Exact local trigger time plus a rolling pre-trigger timeline.
+2. **Where?** Foreground process/window, its modules, wait chains, and a small minidump.
+3. **What happened?** CPU, DPC, interrupt, memory commit, disk queue/I/O rate, processor queue, app responsiveness, and process snapshot.
+4. **How did it develop?** The last 180 seconds are held in RAM and flushed only when a trigger occurs.
+5. **Why is it likely happening?** A rule-based summary correlates deadlocks, WHEA, storage/GPU events, memory pressure, DPC/interrupt spikes, CPU starvation, and application-only hangs.
 
-Written in C with no external runtime dependencies.
+## Why this stays light
 
-## Features
+Normal background operation does **not** continuously write logs to disk and does **not** continuously run ETW/WPR, enumerate every process, walk stacks, or query Event Log.
 
-* Native C implementation
-* Runs as a Windows Service
-* Starts automatically with Windows
-* Global `winfreezetrace` CLI
-* Low-overhead 500 ms sampling
-* Rolling log with bounded disk usage
-* In-memory ring buffer
-* Automatic freeze/stall detection
-* Per-physical-disk performance counters
-* CPU, DPC, interrupt, memory, and paging metrics
-* Process I/O monitoring
-* Collector heartbeat monitoring
-* Windows Event Log correlation
-* Automatic service recovery after crashes
-* No filesystem repair or disk modification
+The steady-state loop wakes once per second and collects a small set of PDH/system counters plus a foreground-window responsiveness probe. Data is stored in a fixed RAM ring buffer. Heavy work happens only after a trigger.
 
-## Metrics
+Default RAM history is tiny (180 samples). CPU use should normally be near idle between one-second wakeups.
 
-WinFreezeTrace records:
+## Trigger conditions
 
-### System
+- **Whole-system/scheduler stall:** the one-second watchdog wake is late by at least 1500 ms.
+- **Foreground app hang:** the foreground window fails a 250 ms `WM_NULL` responsiveness probe for 3 consecutive samples.
+- **Manual capture:** press **Ctrl+Alt+F12** at any time.
 
-* CPU usage
-* DPC time
-* Interrupt time
-* Available memory
-* Paging activity
-* Process count
-* Thread count
-* System uptime
+A 60-second cooldown prevents report storms.
 
-### Physical disks
+Long delays over 60 seconds are ignored as automatic scheduler-stall triggers to avoid treating sleep/hibernate resume as a freeze. You can still press Ctrl+Alt+F12 after resume if you want a report.
 
-* Read latency
-* Write latency
-* Disk queue length
-* Read/write throughput
-* IOPS
-* Disk busy percentage
+## What each incident contains
 
-### Processes
+- `summary.txt` — trigger, evidence, and likely-cause analysis with confidence labels.
+- `timeline.csv` — rolling pre-trigger metrics from RAM.
+- `processes.csv` — trigger-time process snapshot sorted by short-window CPU usage; also memory, I/O totals, handles, path.
+- `waitchains.txt` — Wait Chain Traversal for every thread of the foreground process; highlights circular waits/deadlocks.
+- `threads.csv` — target thread IDs, priorities, and accumulated kernel/user CPU time.
+- `modules.csv` — loaded DLL/module map for the foreground process.
+- `target.dmp` — small minidump focused on threads/process state. Open in WinDbg for exact stacks/symbols. Created only on trigger.
+- `events_system.xml` — last 5 minutes of System Critical/Error/Warning events.
+- `events_application.xml` — last 5 minutes of Application Critical/Error/Warning events.
+- `drives.csv` — volume free-space snapshot.
 
-* Process I/O activity
-* High-I/O processes
+Reports are stored by default under:
 
-### Monitor health
+`%LOCALAPPDATA%\WinFreezeTrace\reports\YYYYMMDD_HHMMSS_reason\`
 
-* Collector heartbeat
-* Sampling gaps
-* PDH query duration
-* Process scan duration
-* File write duration
+## What the diagnosis looks for
 
-This helps distinguish an application slowdown from a storage stall, driver/kernel delay, or a broader system freeze.
+- **Deadlock / circular wait:** Wait Chain Traversal reports a cycle.
+- **Hardware / PCIe / CPU / RAM:** recent WHEA events.
+- **Storage stall:** storport/storahci/stornvme/disk events and/or high disk queue without CPU saturation.
+- **GPU/driver reset:** display-driver events near the incident.
+- **Memory pressure:** commit or memory load near exhaustion.
+- **Driver interrupt latency:** high DPC or interrupt CPU time.
+- **CPU starvation:** CPU near 100% plus a processor queue longer than the logical CPU count.
+- **App-only hang:** foreground app stops responding while the watchdog remains schedulable.
 
-## Requirements
-
-* Windows 10 or Windows 11
-* CMake
-* Visual Studio / MSVC Build Tools
+The summary intentionally says “likely” rather than pretending a heuristic proves root cause.
 
 ## Build
+
+### Visual Studio / Developer Command Prompt
 
 ```bat
 cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
-The executable will be available at:
+Result is normally:
 
-```text
-build\Release\WinFreezeTrace.exe
-```
+`build\Release\WinFreezeTrace.exe`
 
-## Install
-
-Open CMD or PowerShell as Administrator:
+### MinGW-w64
 
 ```bat
-build\Release\WinFreezeTrace.exe install
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --config Release
 ```
 
-WinFreezeTrace installs itself to:
+No third-party runtime libraries are required beyond normal Windows system DLLs.
 
-```text
-C:\Program Files\WinFreezeTrace\winfreezetrace.exe
-```
+## Run in the background
 
-and adds the directory to the system `PATH`.
+The target is a `WIN32` GUI executable, so it does not leave a console window open.
 
-Open a new terminal after installation.
-
-You can then run:
+Simply run:
 
 ```bat
-winfreezetrace status
+WinFreezeTrace.exe --background
 ```
 
-from any directory.
+For automatic start at user logon, put `WinFreezeTrace.exe` next to `install_task.cmd` and run the script once. It creates a **LIMITED / normal-user** scheduled task, so it does not unnecessarily run elevated.
 
-The Windows service is configured to start automatically during boot.
+Use `uninstall_task.cmd` to remove it.
 
-## CLI
+## Useful options
 
 ```text
-winfreezetrace status
-winfreezetrace start
-winfreezetrace stop
-winfreezetrace restart
-winfreezetrace logs
-winfreezetrace uninstall
-winfreezetrace --help
+--interval 1000          Sampling interval in ms (minimum 250)
+--history 180            Seconds kept in the in-memory ring (30..600)
+--stall-ms 1500          Watchdog lateness that triggers a system-stall capture
+--hang-timeout-ms 250    Window responsiveness timeout per sample
+--hang-samples 3         Consecutive failed probes before app-hang capture
+--cooldown 60            Minimum seconds between automatic reports
+--no-dump                Disable target.dmp if you want the smallest incident footprint
+--report-dir "D:\path"   Override report directory
 ```
 
-`status`, `logs`, and help commands can be used without administrator privileges.
+For the lightest default background behavior, keep the 1000 ms interval. Lowering it below 500 ms provides finer timing but creates more wakeups.
 
-Commands that modify the Windows service require an elevated terminal.
+## Reading a report quickly
 
-## Default Configuration
+Start with `summary.txt`, then:
 
-```text
-Sampling interval       500 ms
-Ring buffer             30 minutes
-Pre-trigger history      5 minutes
-Post-trigger capture     5 minutes
-Disk latency trigger   500 ms
-Disk queue trigger       10
-Collector gap trigger     2 seconds
-```
+- If it says **wait-chain cycle**, inspect `waitchains.txt`; open `target.dmp` in WinDbg for call stacks.
+- If it flags **WHEA/storage/display**, compare exact event timestamps in the XML files to the freeze time.
+- If it flags **CPU starvation**, inspect the first rows of `processes.csv` and the last 10–20 rows of `timeline.csv`.
+- If it flags **memory pressure**, inspect commit/memory columns in `timeline.csv`.
+- If no strong signature exists but a scheduler stall was real, a kernel ETW/WPR trace is the next escalation. WinFreezeTrace intentionally avoids keeping kernel ETW on all the time because that would defeat the “light background monitor” goal.
 
-Custom values can be specified during installation:
+## Privilege note
 
-```bat
-WinFreezeTrace.exe install ^
-  --interval 500 ^
-  --ring-minutes 30 ^
-  --pre-minutes 5 ^
-  --post-minutes 5 ^
-  --latency-ms 500 ^
-  --queue 10
-```
-
-Running `install` again updates the existing service configuration and restarts it.
-
-## Logs
-
-Logs are stored in:
-
-```text
-C:\ProgramData\WinFreezeTrace\logs
-```
-
-Open the log directory with:
-
-```bat
-winfreezetrace logs
-```
-
-Typical output:
-
-```text
-logs\
-├── rolling.csv
-├── rolling.prev.csv
-├── watchdog.log
-├── errors.log
-└── event-YYYY-MM-DD_HH-MM-SS-mmm\
-    ├── metrics.csv
-    ├── summary.txt
-    └── eventlog.xml
-```
-
-### `rolling.csv`
-
-Continuously records recent performance metrics.
-
-The rolling log has a bounded size so WinFreezeTrace can remain active for long periods without continuously consuming disk space.
-
-### `watchdog.log`
-
-Records collector heartbeat information and sampling stalls.
-
-A gap here can be useful when the system becomes too unresponsive for normal performance queries to complete.
-
-### Event directories
-
-When an abnormal condition is detected, WinFreezeTrace preserves metrics from before and after the trigger in a separate event directory.
-
-Relevant Windows Event Log entries are also collected when possible.
-
-## Event Detection
-
-An event can be triggered by conditions such as:
-
-```text
-Disk latency >= 500 ms
-Disk queue   >= 10
-Collector heartbeat gap >= 2 seconds
-```
-
-The purpose of these triggers is not to declare a component faulty. They preserve the surrounding timeline so the actual cause can be investigated afterward.
-
-For example:
-
-```text
-T - 30s   PhysicalDisk latency begins increasing
-T - 10s   Disk queue rises
-T -  3s   DPC activity spikes
-T         Desktop stops responding
-```
-
-This is generally more useful than inspecting Task Manager after the system has already recovered.
-
-## Uninstall
-
-Open an elevated terminal:
-
-```bat
-winfreezetrace uninstall
-```
-
-This removes the Windows service, installed CLI, and PATH entry.
-
-Diagnostic logs are preserved.
+Running as a normal user is recommended for low-risk background use. A normal user may be unable to read another elevated/protected process, so that process's minidump/modules can be missing. The system metrics and accessible Event Log data still get written. If a specific elevated application is the recurring target, you can run WinFreezeTrace elevated for that troubleshooting session only.

@@ -1,35 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
-project(WinFreezeTrace VERSION 0.2.1 LANGUAGES C)
+project(WinFreezeTrace C)
 
-if(NOT WIN32)
-    message(FATAL_ERROR "WinFreezeTrace targets Windows only.")
-endif()
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
-add_executable(WinFreezeTrace
-    src/main.c
-)
-
-target_compile_features(WinFreezeTrace PRIVATE c_std_11)
-target_compile_definitions(WinFreezeTrace PRIVATE
-    UNICODE
-    _UNICODE
-    _WIN32_WINNT=0x0601
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    _CRT_SECURE_NO_WARNINGS
-)
+add_executable(WinFreezeTrace WIN32 src/main.c)
+target_compile_definitions(WinFreezeTrace PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(WinFreezeTrace PRIVATE user32 psapi pdh wevtapi advapi32 dbghelp shell32)
 
 if(MSVC)
-    target_compile_options(WinFreezeTrace PRIVATE /W4 /permissive-)
+  target_compile_options(WinFreezeTrace PRIVATE /W4 /O2 /guard:cf)
+  target_link_options(WinFreezeTrace PRIVATE /DYNAMICBASE /NXCOMPAT)
 else()
-    target_compile_options(WinFreezeTrace PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(WinFreezeTrace PRIVATE -Wall -Wextra -O2)
 endif()
-
-target_link_libraries(WinFreezeTrace PRIVATE
-    pdh
-    wevtapi
-    advapi32
-    user32
-)
-
-install(TARGETS WinFreezeTrace RUNTIME DESTINATION .)

@@ -1,1755 +1,810 @@
+#define _CRT_SECURE_NO_WARNINGS
 #define UNICODE
 #define _UNICODE
-#define _WIN32_WINNT 0x0601
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-
 #include <windows.h>
-#include <pdh.h>
-#include <pdhmsg.h>
 #include <tlhelp32.h>
+#include <psapi.h>
+#include <pdh.h>
 #include <winevt.h>
-#include <stdint.h>
+#include <wct.h>
+#include <dbghelp.h>
+#include <shlobj.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdint.h>
 #include <stdbool.h>
 #include <wchar.h>
-#include <string.h>
-#include <math.h>
+#include <stdlib.h>
 
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "wevtapi.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "dbghelp.lib")
+#pragma comment(lib, "shell32.lib")
 
 #define APP_NAME L"WinFreezeTrace"
-#define VERSION_W L"0.2.1"
-#define SERVICE_NAME L"WinFreezeTrace"
-#define SERVICE_DISPLAY_NAME L"WinFreezeTrace Freeze Monitor"
-#define INSTALL_DIR_NAME L"WinFreezeTrace"
-#define INSTALL_EXE_NAME L"winfreezetrace.exe"
-#define MACHINE_ENV_KEY L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"
-#define MAX_DISKS 32
-#define MAX_TOP_IO 5
+#define MAX_RING 600
+#define MAX_TITLE 512
+#define MAX_PATH_W 1024
 #define MAX_PROCS 4096
-#define MAX_PATH_WFT 1024
-#define ROLLING_LIMIT_BYTES (32LL * 1024LL * 1024LL)
-#define ROLLING_FLUSH_MS 2000ULL
-#define EVENTLOG_WINDOW_MS 120000ULL
-#define WATCHDOG_GAP_MS 2000ULL
+#define MAX_EVENT_XML 262144
 
-#define TRIGGER_LATENCY 0x01u
-#define TRIGGER_QUEUE   0x02u
-#define TRIGGER_GAP     0x04u
-
-#define COUNTOF(x) (sizeof(x) / sizeof((x)[0]))
-
-typedef enum CollectorStage {
-    STAGE_STARTING = 0,
-    STAGE_SLEEP,
-    STAGE_PDH_COLLECT,
-    STAGE_PDH_FORMAT,
-    STAGE_PROCESS_SCAN,
-    STAGE_RING_UPDATE,
-    STAGE_FILE_WRITE,
-    STAGE_EVENT_FINALIZE,
-    STAGE_STOPPED
-} CollectorStage;
+#define EVENTFLAG_WHEA      0x0001
+#define EVENTFLAG_STORAGE   0x0002
+#define EVENTFLAG_DISPLAY   0x0004
+#define EVENTFLAG_APPHANG   0x0008
+#define EVENTFLAG_POWER     0x0010
+#define EVENTFLAG_NTFS      0x0020
 
 typedef struct Config {
     DWORD interval_ms;
-    DWORD ring_minutes;
-    DWORD pre_minutes;
-    DWORD post_minutes;
-    double latency_trigger_ms;
-    double queue_trigger;
-    bool process_io;
-    bool quiet;
-    wchar_t log_dir[MAX_PATH_WFT];
+    DWORD history_seconds;
+    DWORD stall_ms;
+    DWORD hang_timeout_ms;
+    DWORD hang_samples;
+    DWORD cooldown_seconds;
+    BOOL make_dump;
+    BOOL background;
+    WCHAR report_root[MAX_PATH_W];
 } Config;
 
-typedef struct DiskMetric {
-    double read_latency_ms;
-    double write_latency_ms;
-    double queue;
-    double bytes_sec;
-    double iops;
-    double busy_pct;
-    bool valid;
-} DiskMetric;
-
-typedef struct TopIo {
-    DWORD pid;
-    wchar_t name[MAX_PATH];
-    uint64_t read_bps;
-    uint64_t write_bps;
-    uint64_t total_bps;
-} TopIo;
+typedef struct Metrics {
+    double cpu;
+    double dpc;
+    double interrupt;
+    double disk_queue;
+    double disk_read_bps;
+    double disk_write_bps;
+    double commit_pct;
+    double proc_queue;
+    DWORD mem_load;
+    uint64_t avail_mb;
+} Metrics;
 
 typedef struct Sample {
-    uint64_t seq;
-    uint64_t mono_ms;
-    FILETIME utc;
-    double interval_ms;
-    double pdh_ms;
-    double proc_ms;
-    double cpu_pct;
-    double dpc_pct;
-    double interrupt_pct;
-    double avail_mb;
-    double pages_sec;
-    double process_count;
-    double thread_count;
-    double uptime_sec;
-    uint32_t trigger_flags;
-    uint32_t disk_mask;
-    DiskMetric disks[MAX_DISKS];
-    TopIo top[MAX_TOP_IO];
+    SYSTEMTIME ts;
+    int wake_late_ms;
+    Metrics m;
+    DWORD fg_pid;
+    DWORD fg_tid;
+    BOOL fg_hung;
+    WCHAR fg_path[MAX_PATH_W];
+    WCHAR fg_title[MAX_TITLE];
+    WCHAR fg_class[128];
 } Sample;
 
-typedef struct ProcPrev {
-    DWORD pid;
-    uint64_t read_bytes;
-    uint64_t write_bytes;
-    uint64_t stamp_ms;
-    uint64_t seen_generation;
-    wchar_t name[MAX_PATH];
-} ProcPrev;
-
 typedef struct PdhState {
-    PDH_HQUERY query;
+    PDH_HQUERY q;
     PDH_HCOUNTER cpu;
     PDH_HCOUNTER dpc;
-    PDH_HCOUNTER interrupt;
-    PDH_HCOUNTER avail_mb;
-    PDH_HCOUNTER pages_sec;
-    PDH_HCOUNTER processes;
-    PDH_HCOUNTER threads;
-    PDH_HCOUNTER uptime;
-
-    PDH_HCOUNTER disk_read_latency;
-    PDH_HCOUNTER disk_write_latency;
-    PDH_HCOUNTER disk_queue;
-    PDH_HCOUNTER disk_bytes;
-    PDH_HCOUNTER disk_iops;
-    PDH_HCOUNTER disk_busy;
+    PDH_HCOUNTER intr;
+    PDH_HCOUNTER diskq;
+    PDH_HCOUNTER readbps;
+    PDH_HCOUNTER writebps;
+    PDH_HCOUNTER commit;
+    PDH_HCOUNTER procq;
+    BOOL ok;
 } PdhState;
 
-typedef struct EventCapture {
-    bool active;
-    uint64_t trigger_mono_ms;
-    FILETIME trigger_utc;
-    uint32_t reasons;
-    wchar_t dir[MAX_PATH_WFT];
-    FILE *metrics;
-    FILE *summary;
-} EventCapture;
+typedef struct ProcBase {
+    DWORD pid;
+    ULONGLONG cpu100ns;
+} ProcBase;
 
-static Config g_cfg;
-static volatile LONG g_stop = 0;
-static volatile LONG64 g_heartbeat_ms = 0;
-static volatile LONG g_stage = STAGE_STARTING;
-static volatile LONG g_watchdog_trigger_pending = 0;
-static volatile LONG64 g_watchdog_gap_ms = 0;
-static CRITICAL_SECTION g_log_lock;
-static SERVICE_STATUS_HANDLE g_service_status_handle = NULL;
-static SERVICE_STATUS g_service_status;
-static int g_main_argc = 0;
-static wchar_t **g_main_argv = NULL;
+typedef struct ProcRow {
+    DWORD pid;
+    DWORD ppid;
+    double cpu_system_pct;
+    double cpu_one_core_pct;
+    SIZE_T working_set;
+    SIZE_T private_bytes;
+    ULONGLONG read_bytes;
+    ULONGLONG write_bytes;
+    DWORD handles;
+    WCHAR path[MAX_PATH_W];
+} ProcRow;
 
-static wchar_t g_disk_names[MAX_DISKS][128];
-static size_t g_disk_count = 0;
+typedef enum TriggerReason {
+    TRIGGER_SCHEDULER_STALL = 1,
+    TRIGGER_APP_HANG = 2,
+    TRIGGER_MANUAL = 3
+} TriggerReason;
 
-static Sample *g_ring = NULL;
-static size_t g_ring_cap = 0;
-static size_t g_ring_count = 0;
-static size_t g_ring_head = 0;
+static volatile LONG g_manual_trigger = 0;
+static LARGE_INTEGER g_qpf;
 
-static ProcPrev g_procs[MAX_PROCS];
-static size_t g_proc_count = 0;
-static uint64_t g_proc_generation = 0;
-static uint64_t g_last_proc_scan_ms = 0;
-static TopIo g_last_top[MAX_TOP_IO];
-
-static FILE *g_rolling = NULL;
-static wchar_t g_rolling_path[MAX_PATH_WFT];
-static uint64_t g_last_roll_flush_ms = 0;
-static EventCapture g_event;
-
-static uint64_t mono_ms(void) {
-    return GetTickCount64();
+static double qpc_ms(void) {
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return (double)q.QuadPart * 1000.0 / (double)g_qpf.QuadPart;
 }
 
-static void heartbeat(CollectorStage stage) {
-    InterlockedExchange(&g_stage, (LONG)stage);
-    InterlockedExchange64(&g_heartbeat_ms, (LONG64)mono_ms());
+static void write_utf8(FILE *f, const WCHAR *s) {
+    if (!s) return;
+    int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
+    if (n <= 1) return;
+    char *buf = (char*)malloc((size_t)n);
+    if (!buf) return;
+    WideCharToMultiByte(CP_UTF8, 0, s, -1, buf, n, NULL, NULL);
+    fwrite(buf, 1, (size_t)n - 1, f);
+    free(buf);
 }
 
-static const wchar_t *stage_name(LONG stage) {
-    switch ((CollectorStage)stage) {
-        case STAGE_STARTING: return L"starting";
-        case STAGE_SLEEP: return L"sleep";
-        case STAGE_PDH_COLLECT: return L"pdh_collect";
-        case STAGE_PDH_FORMAT: return L"pdh_format";
-        case STAGE_PROCESS_SCAN: return L"process_scan";
-        case STAGE_RING_UPDATE: return L"ring_update";
-        case STAGE_FILE_WRITE: return L"file_write";
-        case STAGE_EVENT_FINALIZE: return L"event_finalize";
-        case STAGE_STOPPED: return L"stopped";
+static void csv_w(FILE *f, const WCHAR *s) {
+    fputc('"', f);
+    if (s) {
+        for (const WCHAR *p = s; *p; ++p) {
+            if (*p == L'"') {
+                fputs("\"\"", f);
+            } else {
+                WCHAR tmp[2] = {*p, 0};
+                write_utf8(f, tmp);
+            }
+        }
+    }
+    fputc('"', f);
+}
+
+static BOOL ensure_dir(const WCHAR *path) {
+    if (CreateDirectoryW(path, NULL)) return TRUE;
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static void default_report_root(WCHAR *out, size_t cch) {
+    WCHAR base[MAX_PATH_W] = {0};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA | CSIDL_FLAG_CREATE, NULL, SHGFP_TYPE_CURRENT, base))) {
+        _snwprintf(out, cch, L"%ls\\WinFreezeTrace\\reports", base);
+        WCHAR parent[MAX_PATH_W];
+        _snwprintf(parent, _countof(parent), L"%ls\\WinFreezeTrace", base);
+        ensure_dir(parent);
+        ensure_dir(out);
+    } else {
+        GetCurrentDirectoryW((DWORD)cch, out);
+    }
+}
+
+static const WCHAR* base_name(const WCHAR *path) {
+    const WCHAR *p = path, *last = path;
+    while (p && *p) {
+        if (*p == L'\\' || *p == L'/') last = p + 1;
+        ++p;
+    }
+    return last;
+}
+
+static BOOL get_process_path(DWORD pid, WCHAR *out, DWORD cch) {
+    out[0] = 0;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return FALSE;
+    DWORD n = cch;
+    BOOL ok = QueryFullProcessImageNameW(h, 0, out, &n);
+    CloseHandle(h);
+    return ok;
+}
+
+static void get_foreground(DWORD *pid, DWORD *tid, WCHAR *title, size_t title_cch, WCHAR *wnd_class, size_t class_cch, WCHAR *path, size_t path_cch, BOOL *hung, DWORD timeout_ms) {
+    *pid = 0; *tid = 0; *hung = FALSE;
+    title[0] = 0; wnd_class[0] = 0; path[0] = 0;
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd) return;
+    *tid = GetWindowThreadProcessId(hwnd, pid);
+    GetWindowTextW(hwnd, title, (int)title_cch);
+    GetClassNameW(hwnd, wnd_class, (int)class_cch);
+    if (*pid) get_process_path(*pid, path, (DWORD)path_cch);
+
+    DWORD_PTR result = 0;
+    SetLastError(ERROR_SUCCESS);
+    LRESULT r = SendMessageTimeoutW(hwnd, WM_NULL, 0, 0,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+        timeout_ms, &result);
+    if (r == 0 && GetLastError() == ERROR_TIMEOUT) *hung = TRUE;
+}
+
+static double pdh_value(PDH_HCOUNTER c) {
+    if (!c) return -1.0;
+    PDH_FMT_COUNTERVALUE v;
+    DWORD type = 0;
+    if (PdhGetFormattedCounterValue(c, PDH_FMT_DOUBLE, &type, &v) != ERROR_SUCCESS) return -1.0;
+    if (v.CStatus != PDH_CSTATUS_VALID_DATA && v.CStatus != PDH_CSTATUS_NEW_DATA) return -1.0;
+    return v.doubleValue;
+}
+
+static void pdh_add(PDH_HQUERY q, const WCHAR *path, PDH_HCOUNTER *out) {
+    *out = NULL;
+    if (PdhAddEnglishCounterW(q, path, 0, out) != ERROR_SUCCESS) {
+        PdhAddCounterW(q, path, 0, out);
+    }
+}
+
+static BOOL pdh_init(PdhState *p) {
+    ZeroMemory(p, sizeof(*p));
+    if (PdhOpenQueryW(NULL, 0, &p->q) != ERROR_SUCCESS) return FALSE;
+    pdh_add(p->q, L"\\Processor(_Total)\\% Processor Time", &p->cpu);
+    pdh_add(p->q, L"\\Processor(_Total)\\% DPC Time", &p->dpc);
+    pdh_add(p->q, L"\\Processor(_Total)\\% Interrupt Time", &p->intr);
+    pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Avg. Disk Queue Length", &p->diskq);
+    pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec", &p->readbps);
+    pdh_add(p->q, L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec", &p->writebps);
+    pdh_add(p->q, L"\\Memory\\% Committed Bytes In Use", &p->commit);
+    pdh_add(p->q, L"\\System\\Processor Queue Length", &p->procq);
+    PdhCollectQueryData(p->q);
+    p->ok = TRUE;
+    return TRUE;
+}
+
+static void pdh_close(PdhState *p) {
+    if (p->q) PdhCloseQuery(p->q);
+    ZeroMemory(p, sizeof(*p));
+}
+
+static void collect_metrics(PdhState *p, Metrics *m) {
+    ZeroMemory(m, sizeof(*m));
+    m->cpu = m->dpc = m->interrupt = m->disk_queue = -1.0;
+    m->disk_read_bps = m->disk_write_bps = m->commit_pct = m->proc_queue = -1.0;
+    if (p->ok && PdhCollectQueryData(p->q) == ERROR_SUCCESS) {
+        m->cpu = pdh_value(p->cpu);
+        m->dpc = pdh_value(p->dpc);
+        m->interrupt = pdh_value(p->intr);
+        m->disk_queue = pdh_value(p->diskq);
+        m->disk_read_bps = pdh_value(p->readbps);
+        m->disk_write_bps = pdh_value(p->writebps);
+        m->commit_pct = pdh_value(p->commit);
+        m->proc_queue = pdh_value(p->procq);
+    }
+    MEMORYSTATUSEX ms;
+    ZeroMemory(&ms, sizeof(ms));
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        m->mem_load = ms.dwMemoryLoad;
+        m->avail_mb = ms.ullAvailPhys / (1024ull * 1024ull);
+    }
+}
+
+static const char *trigger_name(TriggerReason r) {
+    switch (r) {
+        case TRIGGER_SCHEDULER_STALL: return "scheduler_stall";
+        case TRIGGER_APP_HANG: return "foreground_app_hang";
+        case TRIGGER_MANUAL: return "manual_hotkey";
+        default: return "unknown";
+    }
+}
+
+static const WCHAR *trigger_name_w(TriggerReason r) {
+    switch (r) {
+        case TRIGGER_SCHEDULER_STALL: return L"scheduler_stall";
+        case TRIGGER_APP_HANG: return L"foreground_app_hang";
+        case TRIGGER_MANUAL: return L"manual_hotkey";
         default: return L"unknown";
     }
 }
 
-static void filetime_to_local_text(FILETIME ft, wchar_t *buf, size_t cap) {
-    FILETIME local_ft;
-    SYSTEMTIME st;
-    if (!FileTimeToLocalFileTime(&ft, &local_ft) || !FileTimeToSystemTime(&local_ft, &st)) {
-        wcsncpy(buf, L"unknown", cap - 1);
-        buf[cap - 1] = L'\0';
-        return;
-    }
-    _snwprintf(buf, cap, L"%04u-%02u-%02u %02u:%02u:%02u.%03u",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-}
-
-static void filetime_to_folder_text(FILETIME ft, wchar_t *buf, size_t cap) {
-    FILETIME local_ft;
-    SYSTEMTIME st;
-    FileTimeToLocalFileTime(&ft, &local_ft);
-    FileTimeToSystemTime(&local_ft, &st);
-    _snwprintf(buf, cap, L"%04u-%02u-%02u_%02u-%02u-%02u-%03u",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-}
-
-static uint64_t filetime_to_u64(FILETIME ft) {
-    ULARGE_INTEGER u;
-    u.LowPart = ft.dwLowDateTime;
-    u.HighPart = ft.dwHighDateTime;
-    return u.QuadPart;
-}
-
-static FILETIME u64_to_filetime(uint64_t v) {
-    ULARGE_INTEGER u;
-    FILETIME ft;
-    u.QuadPart = v;
-    ft.dwLowDateTime = u.LowPart;
-    ft.dwHighDateTime = u.HighPart;
-    return ft;
-}
-
-static void filetime_to_iso_utc(FILETIME ft, wchar_t *buf, size_t cap) {
-    SYSTEMTIME st;
-    FileTimeToSystemTime(&ft, &st);
-    _snwprintf(buf, cap, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
-               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-}
-
-static bool ensure_dir(const wchar_t *path) {
-    DWORD attr = GetFileAttributesW(path);
-    if (attr != INVALID_FILE_ATTRIBUTES) return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    if (CreateDirectoryW(path, NULL)) return true;
-    return GetLastError() == ERROR_ALREADY_EXISTS;
-}
-
-static bool ensure_dir_recursive(const wchar_t *path) {
-    if (!path || !path[0]) return false;
-    wchar_t tmp[MAX_PATH_WFT];
-    wcsncpy(tmp, path, COUNTOF(tmp) - 1);
-    tmp[COUNTOF(tmp) - 1] = L'\0';
-
-    size_t len = wcslen(tmp);
-    while (len > 0 && (tmp[len - 1] == L'\\' || tmp[len - 1] == L'/')) tmp[--len] = L'\0';
-    if (len == 0) return false;
-
-    size_t start = 0;
-    if (len >= 3 && tmp[1] == L':' && (tmp[2] == L'\\' || tmp[2] == L'/')) {
-        start = 3;
-    } else if (len >= 2 && tmp[0] == L'\\' && tmp[1] == L'\\') {
-        int separators = 0;
-        for (size_t i = 2; i < len; ++i) {
-            if (tmp[i] == L'\\' || tmp[i] == L'/') {
-                separators++;
-                if (separators == 2) { start = i + 1; break; }
-            }
+static DWORD WINAPI hotkey_thread(LPVOID unused) {
+    (void)unused;
+    if (!RegisterHotKey(NULL, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F12)) return 0;
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.message == WM_HOTKEY && msg.wParam == 1) {
+            InterlockedExchange(&g_manual_trigger, 1);
         }
     }
-
-    for (size_t i = start; i < len; ++i) {
-        if (tmp[i] == L'/' ) tmp[i] = L'\\';
-        if (tmp[i] == L'\\') {
-            wchar_t saved = tmp[i];
-            tmp[i] = L'\0';
-            if (tmp[0] && !ensure_dir(tmp)) return false;
-            tmp[i] = saved;
-        }
-    }
-    return ensure_dir(tmp);
+    UnregisterHotKey(NULL, 1);
+    return 0;
 }
 
-static void default_log_dir(wchar_t *dst, size_t cap, bool service_mode) {
-    if (!service_mode) {
-        wcsncpy(dst, L"logs", cap - 1);
-        dst[cap - 1] = L'\0';
-        return;
-    }
-
-    wchar_t program_data[MAX_PATH_WFT];
-    DWORD n = GetEnvironmentVariableW(L"ProgramData", program_data, (DWORD)COUNTOF(program_data));
-    if (n == 0 || n >= COUNTOF(program_data)) {
-        wcsncpy(program_data, L"C:\\ProgramData", COUNTOF(program_data) - 1);
-        program_data[COUNTOF(program_data) - 1] = L'\0';
-    }
-    _snwprintf(dst, cap, L"%ls\\WinFreezeTrace\\logs", program_data);
-    dst[cap - 1] = L'\0';
+static void make_report_dir(const Config *cfg, const SYSTEMTIME *st, TriggerReason reason, WCHAR *out, size_t cch) {
+    _snwprintf(out, cch,
+        L"%ls\\%04u%02u%02u_%02u%02u%02u_%ls",
+        cfg->report_root,
+        st->wYear, st->wMonth, st->wDay,
+        st->wHour, st->wMinute, st->wSecond,
+        trigger_name_w(reason));
+    ensure_dir(out);
 }
 
-static bool make_absolute_path(wchar_t *path, size_t cap) {
-    if (!path || !path[0]) return false;
-    wchar_t full[MAX_PATH_WFT];
-    DWORD n = GetFullPathNameW(path, (DWORD)COUNTOF(full), full, NULL);
-    if (n == 0 || n >= COUNTOF(full)) return false;
-    wcsncpy(path, full, cap - 1);
-    path[cap - 1] = L'\0';
-    return true;
+static void write_timeline(const WCHAR *dir, const Sample *ring, int ring_count, int ring_head) {
+    WCHAR path[MAX_PATH_W];
+    _snwprintf(path, _countof(path), L"%ls\\timeline.csv", dir);
+    FILE *f = _wfopen(path, L"wb");
+    if (!f) return;
+    fputs("time,wake_late_ms,cpu_pct,dpc_pct,interrupt_pct,disk_queue,disk_read_Bps,disk_write_Bps,commit_pct,mem_load_pct,avail_mem_MB,processor_queue,fg_pid,fg_tid,fg_hung,fg_exe,fg_class,fg_title\r\n", f);
+    int start = (ring_head - ring_count + MAX_RING) % MAX_RING;
+    for (int i = 0; i < ring_count; ++i) {
+        const Sample *s = &ring[(start + i) % MAX_RING];
+        fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u.%03u,%d,%.2f,%.2f,%.2f,%.3f,%.0f,%.0f,%.2f,%lu,%llu,%.2f,%lu,%lu,%d,",
+            s->ts.wYear, s->ts.wMonth, s->ts.wDay,
+            s->ts.wHour, s->ts.wMinute, s->ts.wSecond, s->ts.wMilliseconds,
+            s->wake_late_ms, s->m.cpu, s->m.dpc, s->m.interrupt,
+            s->m.disk_queue, s->m.disk_read_bps, s->m.disk_write_bps,
+            s->m.commit_pct, (unsigned long)s->m.mem_load,
+            (unsigned long long)s->m.avail_mb, s->m.proc_queue,
+            (unsigned long)s->fg_pid, (unsigned long)s->fg_tid, s->fg_hung ? 1 : 0);
+        csv_w(f, base_name(s->fg_path)); fputc(',', f);
+        csv_w(f, s->fg_class); fputc(',', f);
+        csv_w(f, s->fg_title); fputs("\r\n", f);
+    }
+    fclose(f);
 }
 
-
-static bool get_install_paths(wchar_t *dir, size_t dir_cap, wchar_t *exe, size_t exe_cap) {
-    wchar_t program_files[MAX_PATH_WFT];
-    DWORD n = GetEnvironmentVariableW(L"ProgramFiles", program_files, (DWORD)COUNTOF(program_files));
-    if (n == 0 || n >= COUNTOF(program_files)) {
-        wcsncpy(program_files, L"C:\\Program Files", COUNTOF(program_files) - 1);
-        program_files[COUNTOF(program_files) - 1] = L'\0';
-    }
-    _snwprintf(dir, dir_cap, L"%ls\\%ls", program_files, INSTALL_DIR_NAME);
-    dir[dir_cap - 1] = L'\0';
-    _snwprintf(exe, exe_cap, L"%ls\\%ls", dir, INSTALL_EXE_NAME);
-    exe[exe_cap - 1] = L'\0';
-    return dir[0] && exe[0];
+static int cmp_proc_cpu(const void *a, const void *b) {
+    const ProcRow *pa = (const ProcRow*)a, *pb = (const ProcRow*)b;
+    if (pa->cpu_system_pct < pb->cpu_system_pct) return 1;
+    if (pa->cpu_system_pct > pb->cpu_system_pct) return -1;
+    return 0;
 }
 
-static bool path_token_equal(const wchar_t *token, size_t token_len, const wchar_t *dir) {
-    while (token_len && (*token == L' ' || *token == L'\t')) { token++; token_len--; }
-    while (token_len && (token[token_len - 1] == L' ' || token[token_len - 1] == L'\t')) token_len--;
-    if (token_len >= 2 && token[0] == L'"' && token[token_len - 1] == L'"') {
-        token++; token_len -= 2;
-    }
-    while (token_len > 3 && (token[token_len - 1] == L'\\' || token[token_len - 1] == L'/')) token_len--;
-    size_t dir_len = wcslen(dir);
-    while (dir_len > 3 && (dir[dir_len - 1] == L'\\' || dir[dir_len - 1] == L'/')) dir_len--;
-    return token_len == dir_len && _wcsnicmp(token, dir, dir_len) == 0;
-}
-
-static bool path_list_contains(const wchar_t *path, const wchar_t *dir) {
-    if (!path || !dir) return false;
-    const wchar_t *start = path;
-    for (const wchar_t *p = path; ; ++p) {
-        if (*p == L';' || *p == L'\0') {
-            if (path_token_equal(start, (size_t)(p - start), dir)) return true;
-            if (*p == L'\0') break;
-            start = p + 1;
-        }
-    }
-    return false;
-}
-
-static void broadcast_environment_change(void) {
-    DWORD_PTR ignored = 0;
-    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"Environment",
-                        SMTO_ABORTIFHUNG, 3000, &ignored);
-}
-
-static bool update_machine_path(const wchar_t *dir, bool add, bool *changed) {
-    if (changed) *changed = false;
-    HKEY key = NULL;
-    LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, MACHINE_ENV_KEY, 0,
-                            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &key);
-    if (rc != ERROR_SUCCESS) {
-        SetLastError((DWORD)rc);
-        return false;
-    }
-
-    DWORD type = 0;
-    DWORD bytes = 0;
-    rc = RegQueryValueExW(key, L"Path", NULL, &type, NULL, &bytes);
-    if (rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND) {
-        RegCloseKey(key);
-        SetLastError((DWORD)rc);
-        return false;
-    }
-    if (type != REG_SZ && type != REG_EXPAND_SZ) type = REG_EXPAND_SZ;
-    if (bytes < sizeof(wchar_t)) bytes = sizeof(wchar_t);
-
-    size_t cap_chars = (size_t)(bytes / sizeof(wchar_t)) + wcslen(dir) + 8;
-    wchar_t *old_path = (wchar_t *)calloc(cap_chars, sizeof(wchar_t));
-    wchar_t *new_path = (wchar_t *)calloc(cap_chars, sizeof(wchar_t));
-    if (!old_path || !new_path) {
-        free(old_path); free(new_path); RegCloseKey(key); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return false;
-    }
-
-    DWORD read_bytes = (DWORD)(cap_chars * sizeof(wchar_t));
-    rc = RegQueryValueExW(key, L"Path", NULL, &type, (LPBYTE)old_path, &read_bytes);
-    if (rc == ERROR_FILE_NOT_FOUND) old_path[0] = L'\0';
-    else if (rc != ERROR_SUCCESS) {
-        free(old_path); free(new_path); RegCloseKey(key); SetLastError((DWORD)rc); return false;
-    }
-    old_path[cap_chars - 1] = L'\0';
-
-    bool contains = path_list_contains(old_path, dir);
-    if (add) {
-        if (contains) {
-            free(old_path); free(new_path); RegCloseKey(key); return true;
-        }
-        if (old_path[0]) {
-            size_t len = wcslen(old_path);
-            while (len && old_path[len - 1] == L';') old_path[--len] = L'\0';
-            _snwprintf(new_path, cap_chars, L"%ls;%ls", old_path, dir);
-        } else {
-            wcsncpy(new_path, dir, cap_chars - 1);
-        }
-    } else {
-        if (!contains) {
-            free(old_path); free(new_path); RegCloseKey(key); return true;
-        }
-        const wchar_t *start = old_path;
-        bool first = true;
-        size_t used = 0;
-        for (const wchar_t *p = old_path; ; ++p) {
-            if (*p == L';' || *p == L'\0') {
-                size_t token_len = (size_t)(p - start);
-                if (!path_token_equal(start, token_len, dir) && token_len) {
-                    if (!first && used + 1 < cap_chars) new_path[used++] = L';';
-                    if (used + token_len < cap_chars) {
-                        wmemcpy(new_path + used, start, token_len);
-                        used += token_len;
-                        new_path[used] = L'\0';
-                    }
-                    first = false;
+static int collect_proc_baseline(ProcBase *base, int maxn) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe;
+    ZeroMemory(&pe, sizeof(pe)); pe.dwSize = sizeof(pe);
+    int n = 0;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (n >= maxn) break;
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+            if (h) {
+                FILETIME c,e,k,u;
+                if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                    ULARGE_INTEGER ku, uu; ku.LowPart=k.dwLowDateTime; ku.HighPart=k.dwHighDateTime; uu.LowPart=u.dwLowDateTime; uu.HighPart=u.dwHighDateTime;
+                    base[n].pid = pe.th32ProcessID;
+                    base[n].cpu100ns = ku.QuadPart + uu.QuadPart;
+                    ++n;
                 }
-                if (*p == L'\0') break;
-                start = p + 1;
+                CloseHandle(h);
             }
-        }
+        } while (Process32NextW(snap, &pe));
     }
-
-    size_t out_bytes = (wcslen(new_path) + 1) * sizeof(wchar_t);
-    rc = RegSetValueExW(key, L"Path", 0, type, (const BYTE *)new_path, (DWORD)out_bytes);
-    free(old_path); free(new_path); RegCloseKey(key);
-    if (rc != ERROR_SUCCESS) { SetLastError((DWORD)rc); return false; }
-    if (changed) *changed = true;
-    broadcast_environment_change();
-    return true;
+    CloseHandle(snap);
+    return n;
 }
 
-static bool install_cli_binary(wchar_t *installed_exe, size_t cap, bool *path_changed) {
-    wchar_t install_dir[MAX_PATH_WFT];
-    if (!get_install_paths(install_dir, COUNTOF(install_dir), installed_exe, cap)) return false;
-    if (!ensure_dir_recursive(install_dir)) return false;
-
-    wchar_t current_exe[MAX_PATH_WFT];
-    DWORD n = GetModuleFileNameW(NULL, current_exe, (DWORD)COUNTOF(current_exe));
-    if (n == 0 || n >= COUNTOF(current_exe)) return false;
-
-    if (_wcsicmp(current_exe, installed_exe) != 0) {
-        if (!CopyFileW(current_exe, installed_exe, FALSE)) return false;
-    }
-
-    if (!update_machine_path(install_dir, true, path_changed)) return false;
-    return true;
-}
-
-static void write_utf8_w(FILE *f, const wchar_t *s) {
-    if (!s) return;
-    int needed = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
-    if (needed <= 1) return;
-    char stack[512];
-    char *buf = stack;
-    if ((size_t)needed > sizeof(stack)) {
-        buf = (char *)malloc((size_t)needed);
-        if (!buf) return;
-    }
-    if (WideCharToMultiByte(CP_UTF8, 0, s, -1, buf, needed, NULL, NULL) > 0) {
-        fwrite(buf, 1, (size_t)needed - 1, f);
-    }
-    if (buf != stack) free(buf);
-}
-
-static void csv_write_quoted_w(FILE *f, const wchar_t *s) {
-    fputc('"', f);
-    if (s) {
-        const wchar_t *start = s;
-        for (const wchar_t *p = s; ; ++p) {
-            if (*p == L'"' || *p == L'\0') {
-                size_t n = (size_t)(p - start);
-                if (n) {
-                    wchar_t stack[256];
-                    wchar_t *tmp = stack;
-                    if (n + 1 > COUNTOF(stack)) {
-                        tmp = (wchar_t *)malloc((n + 1) * sizeof(wchar_t));
-                        if (!tmp) break;
-                    }
-                    wmemcpy(tmp, start, n);
-                    tmp[n] = L'\0';
-                    write_utf8_w(f, tmp);
-                    if (tmp != stack) free(tmp);
-                }
-                if (*p == L'"') {
-                    fputs("\"\"", f);
-                    start = p + 1;
-                } else break;
-            }
-        }
-    }
-    fputc('"', f);
-}
-
-static void log_line_locked(const wchar_t *name, const wchar_t *line) {
-    wchar_t path[MAX_PATH_WFT];
-    _snwprintf(path, COUNTOF(path), L"%ls\\%ls", g_cfg.log_dir, name);
-    EnterCriticalSection(&g_log_lock);
-    FILE *f = _wfopen(path, L"a, ccs=UTF-8");
-    if (f) {
-        fwprintf(f, L"%ls\n", line);
-        fflush(f);
-        fclose(f);
-    }
-    LeaveCriticalSection(&g_log_lock);
-}
-
-static BOOL WINAPI console_handler(DWORD type) {
-    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT ||
-        type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) {
-        InterlockedExchange(&g_stop, 1);
-        return TRUE;
+static BOOL find_baseline(const ProcBase *base, int n, DWORD pid, ULONGLONG *v) {
+    for (int i = 0; i < n; ++i) {
+        if (base[i].pid == pid) { *v = base[i].cpu100ns; return TRUE; }
     }
     return FALSE;
 }
 
-static void print_usage(void) {
-    wprintf(L"%ls %ls\n\n", APP_NAME, VERSION_W);
-    wprintf(L"Usage:\n");
-    wprintf(L"  winfreezetrace                       Run interactively\n");
-    wprintf(L"  winfreezetrace run [options]         Run interactively\n");
-    wprintf(L"  winfreezetrace install [options]     Install global CLI + auto-start service\n");
-    wprintf(L"  winfreezetrace start                 Start installed service\n");
-    wprintf(L"  winfreezetrace stop                  Stop installed service\n");
-    wprintf(L"  winfreezetrace restart               Restart installed service\n");
-    wprintf(L"  winfreezetrace status                Show service status\n");
-    wprintf(L"  winfreezetrace uninstall             Remove service + global CLI PATH entry\n");
-    wprintf(L"  winfreezetrace logs                  Print default service log path\n\n");
-    wprintf(L"Monitor options:\n");
-    wprintf(L"  --interval <ms>       Sample interval, default 500\n");
-    wprintf(L"  --ring-minutes <n>    In-memory history, default 30\n");
-    wprintf(L"  --pre-minutes <n>     Event history before trigger, default 5\n");
-    wprintf(L"  --post-minutes <n>    Event capture after trigger, default 5\n");
-    wprintf(L"  --latency-ms <n>      Trigger if disk read/write latency exceeds n, default 500\n");
-    wprintf(L"  --queue <n>           Trigger if disk queue exceeds n, default 10\n");
-    wprintf(L"  --log-dir <path>      Log directory\n");
-    wprintf(L"  --no-process-io       Disable top process I/O sampling\n");
-    wprintf(L"  --quiet               Reduce console output\n");
-    wprintf(L"  --help                Show this help\n\n");
-    wprintf(L"Service mode default logs: %%ProgramData%%\\WinFreezeTrace\\logs\n");
-}
+static void write_process_snapshot(const WCHAR *dir) {
+    ProcBase base[MAX_PROCS];
+    int bn = collect_proc_baseline(base, MAX_PROCS);
+    const DWORD window_ms = 250;
+    Sleep(window_ms);
 
-static bool parse_u32(const wchar_t *s, DWORD *out) {
-    wchar_t *end = NULL;
-    unsigned long v = wcstoul(s, &end, 10);
-    if (!s[0] || (end && *end) || v > 0xffffffffUL) return false;
-    *out = (DWORD)v;
-    return true;
-}
-
-static bool parse_double_arg(const wchar_t *s, double *out) {
-    wchar_t *end = NULL;
-    double v = wcstod(s, &end);
-    if (!s[0] || (end && *end) || !isfinite(v)) return false;
-    *out = v;
-    return true;
-}
-
-static bool parse_args(int argc, wchar_t **argv, int start_index, bool service_mode) {
-    g_cfg.interval_ms = 500;
-    g_cfg.ring_minutes = 30;
-    g_cfg.pre_minutes = 5;
-    g_cfg.post_minutes = 5;
-    g_cfg.latency_trigger_ms = 500.0;
-    g_cfg.queue_trigger = 10.0;
-    g_cfg.process_io = true;
-    g_cfg.quiet = false;
-    default_log_dir(g_cfg.log_dir, COUNTOF(g_cfg.log_dir), service_mode);
-
-    for (int i = start_index; i < argc; ++i) {
-        if (!wcscmp(argv[i], L"--help") || !wcscmp(argv[i], L"-h")) {
-            print_usage();
-            return false;
-        } else if (!wcscmp(argv[i], L"--no-process-io")) {
-            g_cfg.process_io = false;
-        } else if (!wcscmp(argv[i], L"--quiet")) {
-            g_cfg.quiet = true;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--interval")) {
-            if (!parse_u32(argv[++i], &g_cfg.interval_ms)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--ring-minutes")) {
-            if (!parse_u32(argv[++i], &g_cfg.ring_minutes)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--pre-minutes")) {
-            if (!parse_u32(argv[++i], &g_cfg.pre_minutes)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--post-minutes")) {
-            if (!parse_u32(argv[++i], &g_cfg.post_minutes)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--latency-ms")) {
-            if (!parse_double_arg(argv[++i], &g_cfg.latency_trigger_ms)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--queue")) {
-            if (!parse_double_arg(argv[++i], &g_cfg.queue_trigger)) return false;
-        } else if (i + 1 < argc && !wcscmp(argv[i], L"--log-dir")) {
-            wcsncpy(g_cfg.log_dir, argv[++i], COUNTOF(g_cfg.log_dir) - 1);
-            g_cfg.log_dir[COUNTOF(g_cfg.log_dir) - 1] = L'\0';
-        } else {
-            fwprintf(stderr, L"Unknown/invalid option: %ls\n", argv[i]);
-            return false;
-        }
-    }
-
-    if (g_cfg.interval_ms < 100 || g_cfg.interval_ms > 10000 ||
-        g_cfg.ring_minutes < 1 || g_cfg.ring_minutes > 240 ||
-        g_cfg.pre_minutes > g_cfg.ring_minutes || g_cfg.post_minutes > 60 ||
-        g_cfg.latency_trigger_ms < 1.0 || g_cfg.queue_trigger < 0.0) {
-        fwprintf(stderr, L"Invalid option range. Use --help.\n");
-        return false;
-    }
-
-    if (service_mode) {
-        if (!make_absolute_path(g_cfg.log_dir, COUNTOF(g_cfg.log_dir))) {
-            fwprintf(stderr, L"Cannot resolve service log path.\n");
-            return false;
-        }
-        g_cfg.quiet = true;
-    }
-    return true;
-}
-
-static PDH_STATUS add_counter(PDH_HQUERY q, const wchar_t *path, PDH_HCOUNTER *out) {
-    return PdhAddEnglishCounterW(q, path, 0, out);
-}
-
-static bool pdh_init(PdhState *p) {
-    ZeroMemory(p, sizeof(*p));
-    if (PdhOpenQueryW(NULL, 0, &p->query) != ERROR_SUCCESS) return false;
-
-    struct Item { const wchar_t *path; PDH_HCOUNTER *dst; } items[] = {
-        {L"\\Processor(_Total)\\% Processor Time", &p->cpu},
-        {L"\\Processor(_Total)\\% DPC Time", &p->dpc},
-        {L"\\Processor(_Total)\\% Interrupt Time", &p->interrupt},
-        {L"\\Memory\\Available MBytes", &p->avail_mb},
-        {L"\\Memory\\Pages/sec", &p->pages_sec},
-        {L"\\System\\Processes", &p->processes},
-        {L"\\System\\Threads", &p->threads},
-        {L"\\System\\System Up Time", &p->uptime},
-        {L"\\PhysicalDisk(*)\\Avg. Disk sec/Read", &p->disk_read_latency},
-        {L"\\PhysicalDisk(*)\\Avg. Disk sec/Write", &p->disk_write_latency},
-        {L"\\PhysicalDisk(*)\\Current Disk Queue Length", &p->disk_queue},
-        {L"\\PhysicalDisk(*)\\Disk Bytes/sec", &p->disk_bytes},
-        {L"\\PhysicalDisk(*)\\Disk Transfers/sec", &p->disk_iops},
-        {L"\\PhysicalDisk(*)\\% Disk Time", &p->disk_busy},
-    };
-
-    for (size_t i = 0; i < COUNTOF(items); ++i) {
-        PDH_STATUS st = add_counter(p->query, items[i].path, items[i].dst);
-        if (st != ERROR_SUCCESS) {
-            fwprintf(stderr, L"PDH add counter failed 0x%08lx: %ls\n", (unsigned long)st, items[i].path);
-            PdhCloseQuery(p->query);
-            ZeroMemory(p, sizeof(*p));
-            return false;
-        }
-    }
-
-    PdhCollectQueryData(p->query);
-    Sleep(200);
-    PdhCollectQueryData(p->query);
-    return true;
-}
-
-static void pdh_close(PdhState *p) {
-    if (p->query) PdhCloseQuery(p->query);
-    ZeroMemory(p, sizeof(*p));
-}
-
-static bool pdh_status_has_data(DWORD status) {
-    return status == PDH_CSTATUS_VALID_DATA || status == PDH_CSTATUS_NEW_DATA;
-}
-
-static double pdh_value(PDH_HCOUNTER c) {
-    PDH_FMT_COUNTERVALUE v;
-    DWORD type = 0;
-    PDH_STATUS st = PdhGetFormattedCounterValue(c, PDH_FMT_DOUBLE, &type, &v);
-    if (st != ERROR_SUCCESS || !pdh_status_has_data(v.CStatus)) return NAN;
-    return v.doubleValue;
-}
-
-typedef struct CounterArray {
-    PPDH_FMT_COUNTERVALUE_ITEM_W items;
-    DWORD count;
-} CounterArray;
-
-static bool pdh_array(PDH_HCOUNTER c, CounterArray *a) {
-    DWORD size = 0;
-    DWORD count = 0;
-    PDH_STATUS st = PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, &count, NULL);
-    if (st != PDH_MORE_DATA || size == 0) return false;
-    PPDH_FMT_COUNTERVALUE_ITEM_W items = (PPDH_FMT_COUNTERVALUE_ITEM_W)malloc(size);
-    if (!items) return false;
-    st = PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, &count, items);
-    if (st != ERROR_SUCCESS) {
-        free(items);
-        return false;
-    }
-    a->items = items;
-    a->count = count;
-    return true;
-}
-
-static void pdh_array_free(CounterArray *a) {
-    free(a->items);
-    a->items = NULL;
-    a->count = 0;
-}
-
-static double array_lookup(const CounterArray *a, const wchar_t *name) {
-    if (!a->items) return NAN;
-    for (DWORD i = 0; i < a->count; ++i) {
-        if (!wcscmp(a->items[i].szName, name)) {
-            if (!pdh_status_has_data(a->items[i].FmtValue.CStatus)) return NAN;
-            return a->items[i].FmtValue.doubleValue;
-        }
-    }
-    return NAN;
-}
-
-static int disk_index_for_name(const wchar_t *name) {
-    for (size_t i = 0; i < g_disk_count; ++i) {
-        if (!wcscmp(g_disk_names[i], name)) return (int)i;
-    }
-    if (g_disk_count >= MAX_DISKS) return -1;
-    wcsncpy(g_disk_names[g_disk_count], name, COUNTOF(g_disk_names[0]) - 1);
-    g_disk_names[g_disk_count][COUNTOF(g_disk_names[0]) - 1] = L'\0';
-    return (int)g_disk_count++;
-}
-
-static void collect_disk_arrays(PdhState *p, Sample *s) {
-    CounterArray r = {0}, w = {0}, q = {0}, b = {0}, io = {0}, busy = {0};
-    if (!pdh_array(p->disk_read_latency, &r)) goto done;
-    pdh_array(p->disk_write_latency, &w);
-    pdh_array(p->disk_queue, &q);
-    pdh_array(p->disk_bytes, &b);
-    pdh_array(p->disk_iops, &io);
-    pdh_array(p->disk_busy, &busy);
-
-    for (DWORD i = 0; i < r.count; ++i) {
-        const wchar_t *name = r.items[i].szName;
-        if (!name || !name[0]) continue;
-        int idx = disk_index_for_name(name);
-        if (idx < 0 || idx >= MAX_DISKS) continue;
-        DiskMetric *d = &s->disks[idx];
-        if (pdh_status_has_data(r.items[i].FmtValue.CStatus)) {
-            d->read_latency_ms = r.items[i].FmtValue.doubleValue * 1000.0;
-        } else d->read_latency_ms = NAN;
-        d->write_latency_ms = array_lookup(&w, name) * 1000.0;
-        d->queue = array_lookup(&q, name);
-        d->bytes_sec = array_lookup(&b, name);
-        d->iops = array_lookup(&io, name);
-        d->busy_pct = array_lookup(&busy, name);
-        d->valid = true;
-        s->disk_mask |= (1u << idx);
-    }
-
-done:
-    pdh_array_free(&r); pdh_array_free(&w); pdh_array_free(&q);
-    pdh_array_free(&b); pdh_array_free(&io); pdh_array_free(&busy);
-}
-
-static ProcPrev *find_proc_prev(DWORD pid) {
-    for (size_t i = 0; i < g_proc_count; ++i) if (g_procs[i].pid == pid) return &g_procs[i];
-    return NULL;
-}
-
-static ProcPrev *get_or_add_proc(DWORD pid, const wchar_t *name) {
-    ProcPrev *p = find_proc_prev(pid);
-    if (p) return p;
-    if (g_proc_count >= MAX_PROCS) return NULL;
-    p = &g_procs[g_proc_count++];
-    ZeroMemory(p, sizeof(*p));
-    p->pid = pid;
-    wcsncpy(p->name, name, COUNTOF(p->name) - 1);
-    return p;
-}
-
-static void insert_top_io(TopIo top[MAX_TOP_IO], DWORD pid, const wchar_t *name,
-                          uint64_t read_bps, uint64_t write_bps) {
-    TopIo x;
-    ZeroMemory(&x, sizeof(x));
-    x.pid = pid;
-    wcsncpy(x.name, name, COUNTOF(x.name) - 1);
-    x.read_bps = read_bps;
-    x.write_bps = write_bps;
-    x.total_bps = read_bps + write_bps;
-    if (x.total_bps == 0) return;
-
-    for (size_t i = 0; i < MAX_TOP_IO; ++i) {
-        if (x.total_bps > top[i].total_bps) {
-            for (size_t j = MAX_TOP_IO - 1; j > i; --j) top[j] = top[j - 1];
-            top[i] = x;
-            break;
-        }
-    }
-}
-
-static void collect_process_io(Sample *s) {
-    if (!g_cfg.process_io) return;
-    uint64_t now = mono_ms();
-    if (g_last_proc_scan_ms && now - g_last_proc_scan_ms < 1000) {
-        memcpy(s->top, g_last_top, sizeof(g_last_top));
-        return;
-    }
-    g_last_proc_scan_ms = now;
-    ++g_proc_generation;
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    DWORD cores = si.dwNumberOfProcessors ? si.dwNumberOfProcessors : 1;
+    ProcRow *rows = (ProcRow*)calloc(MAX_PROCS, sizeof(ProcRow));
+    if (!rows) return;
+    int rn = 0;
 
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return;
-    PROCESSENTRY32W pe;
-    pe.dwSize = sizeof(pe);
-    if (!Process32FirstW(snap, &pe)) {
-        CloseHandle(snap);
-        return;
-    }
-
-    do {
-        DWORD pid = pe.th32ProcessID;
-        if (pid == 0) continue;
-        HANDLE hp = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!hp) continue;
-        IO_COUNTERS io;
-        if (GetProcessIoCounters(hp, &io)) {
-            ProcPrev *prev = get_or_add_proc(pid, pe.szExeFile);
-            if (prev) {
-                if (prev->stamp_ms && now > prev->stamp_ms &&
-                    io.ReadTransferCount >= prev->read_bytes && io.WriteTransferCount >= prev->write_bytes) {
-                    uint64_t dt = now - prev->stamp_ms;
-                    uint64_t rbps = (io.ReadTransferCount - prev->read_bytes) * 1000ULL / dt;
-                    uint64_t wbps = (io.WriteTransferCount - prev->write_bytes) * 1000ULL / dt;
-                    insert_top_io(s->top, pid, pe.szExeFile, rbps, wbps);
-                }
-                prev->read_bytes = io.ReadTransferCount;
-                prev->write_bytes = io.WriteTransferCount;
-                prev->stamp_ms = now;
-                prev->seen_generation = g_proc_generation;
-                wcsncpy(prev->name, pe.szExeFile, COUNTOF(prev->name) - 1);
-            }
-        }
-        CloseHandle(hp);
-    } while (Process32NextW(snap, &pe));
-    CloseHandle(snap);
-
-    if ((g_proc_generation % 120) == 0) {
-        size_t out = 0;
-        for (size_t i = 0; i < g_proc_count; ++i) {
-            if (g_proc_generation - g_procs[i].seen_generation < 120) {
-                if (out != i) g_procs[out] = g_procs[i];
-                ++out;
-            }
-        }
-        g_proc_count = out;
-    }
-    memcpy(g_last_top, s->top, sizeof(g_last_top));
-}
-
-static void ring_push(const Sample *s) {
-    g_ring[g_ring_head] = *s;
-    g_ring_head = (g_ring_head + 1) % g_ring_cap;
-    if (g_ring_count < g_ring_cap) ++g_ring_count;
-}
-
-static void write_csv_header(FILE *f) {
-    fprintf(f, "timestamp,seq,interval_ms,pdh_ms,proc_ms,cpu_pct,dpc_pct,interrupt_pct,available_mb,pages_sec,process_count,thread_count,uptime_sec,trigger_flags,disk,read_latency_ms,write_latency_ms,queue,disk_bytes_sec,iops,busy_pct,top1_pid,top1_name,top1_read_bps,top1_write_bps,top2_pid,top2_name,top2_read_bps,top2_write_bps\n");
-}
-
-static void write_sample_rows(FILE *f, const Sample *s) {
-    wchar_t ts[64];
-    filetime_to_local_text(s->utc, ts, COUNTOF(ts));
-    bool any = false;
-
-    for (size_t i = 0; i < g_disk_count && i < MAX_DISKS; ++i) {
-        if (!(s->disk_mask & (1u << i))) continue;
-        any = true;
-        const DiskMetric *d = &s->disks[i];
-        write_utf8_w(f, ts);
-        fprintf(f, ",%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.0f,%.3f,%.0f,%.0f,%.3f,%u,",
-                (unsigned long long)s->seq, s->interval_ms, s->pdh_ms, s->proc_ms,
-                s->cpu_pct, s->dpc_pct, s->interrupt_pct, s->avail_mb, s->pages_sec,
-                s->process_count, s->thread_count, s->uptime_sec, s->trigger_flags);
-        csv_write_quoted_w(f, g_disk_names[i]);
-        fprintf(f, ",%.3f,%.3f,%.3f,%.0f,%.3f,%.3f,%lu,",
-                d->read_latency_ms, d->write_latency_ms, d->queue, d->bytes_sec, d->iops, d->busy_pct,
-                (unsigned long)s->top[0].pid);
-        csv_write_quoted_w(f, s->top[0].name);
-        fprintf(f, ",%llu,%llu,%lu,",
-                (unsigned long long)s->top[0].read_bps, (unsigned long long)s->top[0].write_bps,
-                (unsigned long)s->top[1].pid);
-        csv_write_quoted_w(f, s->top[1].name);
-        fprintf(f, ",%llu,%llu\n",
-                (unsigned long long)s->top[1].read_bps, (unsigned long long)s->top[1].write_bps);
-    }
-
-    if (!any) {
-        write_utf8_w(f, ts);
-        fprintf(f, ",%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.0f,%.3f,%.0f,%.0f,%.3f,%u,\"(none)\",,,,,,,%lu,",
-                (unsigned long long)s->seq, s->interval_ms, s->pdh_ms, s->proc_ms,
-                s->cpu_pct, s->dpc_pct, s->interrupt_pct, s->avail_mb, s->pages_sec,
-                s->process_count, s->thread_count, s->uptime_sec, s->trigger_flags,
-                (unsigned long)s->top[0].pid);
-        csv_write_quoted_w(f, s->top[0].name);
-        fprintf(f, ",%llu,%llu,%lu,",
-                (unsigned long long)s->top[0].read_bps, (unsigned long long)s->top[0].write_bps,
-                (unsigned long)s->top[1].pid);
-        csv_write_quoted_w(f, s->top[1].name);
-        fprintf(f, ",%llu,%llu\n",
-                (unsigned long long)s->top[1].read_bps, (unsigned long long)s->top[1].write_bps);
-    }
-}
-
-static void close_rolling(void) {
-    EnterCriticalSection(&g_log_lock);
-    if (g_rolling) {
-        fflush(g_rolling);
-        fclose(g_rolling);
-        g_rolling = NULL;
-    }
-    LeaveCriticalSection(&g_log_lock);
-}
-
-static bool open_rolling(void) {
-    _snwprintf(g_rolling_path, COUNTOF(g_rolling_path), L"%ls\\rolling.csv", g_cfg.log_dir);
-    bool new_file = GetFileAttributesW(g_rolling_path) == INVALID_FILE_ATTRIBUTES;
-    g_rolling = _wfopen(g_rolling_path, L"a+");
-    if (!g_rolling) return false;
-    _fseeki64(g_rolling, 0, SEEK_END);
-    if (new_file || _ftelli64(g_rolling) == 0) write_csv_header(g_rolling);
-    return true;
-}
-
-static void rotate_rolling_if_needed(void) {
-    if (!g_rolling) return;
-    int64_t pos = _ftelli64(g_rolling);
-    if (pos < ROLLING_LIMIT_BYTES) return;
-
-    fflush(g_rolling);
-    fclose(g_rolling);
-    g_rolling = NULL;
-
-    wchar_t prev[MAX_PATH_WFT];
-    _snwprintf(prev, COUNTOF(prev), L"%ls\\rolling.prev.csv", g_cfg.log_dir);
-    DeleteFileW(prev);
-    MoveFileExW(g_rolling_path, prev, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    open_rolling();
-}
-
-static void rolling_write(const Sample *s) {
-    EnterCriticalSection(&g_log_lock);
-    if (!g_rolling && !open_rolling()) {
-        LeaveCriticalSection(&g_log_lock);
-        return;
-    }
-    write_sample_rows(g_rolling, s);
-    uint64_t now = mono_ms();
-    if (now - g_last_roll_flush_ms >= ROLLING_FLUSH_MS || s->trigger_flags) {
-        fflush(g_rolling);
-        g_last_roll_flush_ms = now;
-    }
-    rotate_rolling_if_needed();
-    LeaveCriticalSection(&g_log_lock);
-}
-
-static void reason_text(uint32_t flags, wchar_t *buf, size_t cap) {
-    buf[0] = L'\0';
-    if (flags & TRIGGER_LATENCY) wcsncat(buf, L"disk_latency ", cap - wcslen(buf) - 1);
-    if (flags & TRIGGER_QUEUE) wcsncat(buf, L"disk_queue ", cap - wcslen(buf) - 1);
-    if (flags & TRIGGER_GAP) wcsncat(buf, L"collector_gap ", cap - wcslen(buf) - 1);
-    if (!buf[0]) wcsncpy(buf, L"unknown", cap - 1);
-}
-
-static void dump_ring_pre_history(FILE *f, uint64_t now_ms) {
-    if (!g_ring_count) return;
-    uint64_t pre_ms = (uint64_t)g_cfg.pre_minutes * 60ULL * 1000ULL;
-    size_t oldest = (g_ring_head + g_ring_cap - g_ring_count) % g_ring_cap;
-    for (size_t n = 0; n < g_ring_count; ++n) {
-        size_t idx = (oldest + n) % g_ring_cap;
-        const Sample *s = &g_ring[idx];
-        if (s->mono_ms < now_ms && now_ms - s->mono_ms <= pre_ms) write_sample_rows(f, s);
-    }
-}
-
-static bool start_event_capture(const Sample *trigger_sample, uint32_t reasons) {
-    if (g_event.active) {
-        g_event.reasons |= reasons;
-        return true;
-    }
-
-    wchar_t stamp[64];
-    filetime_to_folder_text(trigger_sample->utc, stamp, COUNTOF(stamp));
-    _snwprintf(g_event.dir, COUNTOF(g_event.dir), L"%ls\\event-%ls", g_cfg.log_dir, stamp);
-    if (!ensure_dir(g_event.dir)) return false;
-
-    wchar_t path[MAX_PATH_WFT];
-    _snwprintf(path, COUNTOF(path), L"%ls\\metrics.csv", g_event.dir);
-    g_event.metrics = _wfopen(path, L"w");
-    if (!g_event.metrics) return false;
-    write_csv_header(g_event.metrics);
-
-    _snwprintf(path, COUNTOF(path), L"%ls\\summary.txt", g_event.dir);
-    g_event.summary = _wfopen(path, L"w, ccs=UTF-8");
-
-    g_event.active = true;
-    g_event.trigger_mono_ms = trigger_sample->mono_ms;
-    g_event.trigger_utc = trigger_sample->utc;
-    g_event.reasons = reasons;
-    dump_ring_pre_history(g_event.metrics, trigger_sample->mono_ms);
-    fflush(g_event.metrics);
-
-    if (g_event.summary) {
-        wchar_t ts[64], why[128];
-        filetime_to_local_text(trigger_sample->utc, ts, COUNTOF(ts));
-        reason_text(reasons, why, COUNTOF(why));
-        fwprintf(g_event.summary, L"WinFreezeTrace %ls\nTrigger: %ls\nReasons: %ls\n", VERSION_W, ts, why);
-        fflush(g_event.summary);
-    }
-
-    if (!g_cfg.quiet) wprintf(L"[trigger] %ls\n", g_event.dir);
-    return true;
-}
-
-static bool xml_contains_provider(const wchar_t *xml) {
-    static const wchar_t *needles[] = {
-        L"Provider Name='disk'", L"Provider Name=\"disk\"",
-        L"Provider Name='storahci'", L"Provider Name=\"storahci\"",
-        L"Provider Name='Ntfs'", L"Provider Name=\"Ntfs\"",
-        L"Provider Name='Microsoft-Windows-WHEA-Logger'", L"Provider Name=\"Microsoft-Windows-WHEA-Logger\"",
-        L"Provider Name='Display'", L"Provider Name=\"Display\"",
-        L"Provider Name='nvlddmkm'", L"Provider Name=\"nvlddmkm\"",
-        L"Provider Name='Microsoft-Windows-Kernel-Power'", L"Provider Name=\"Microsoft-Windows-Kernel-Power\""
-    };
-    for (size_t i = 0; i < COUNTOF(needles); ++i) if (wcsstr(xml, needles[i])) return true;
-    return false;
-}
-
-static void export_eventlog_window(const wchar_t *dir, FILETIME trigger) {
-    const uint64_t ticks_per_ms = 10000ULL;
-    uint64_t t = filetime_to_u64(trigger);
-    uint64_t delta = EVENTLOG_WINDOW_MS * ticks_per_ms;
-    FILETIME from = u64_to_filetime(t > delta ? t - delta : 0);
-    FILETIME to = u64_to_filetime(t + delta);
-    wchar_t from_iso[64], to_iso[64], xpath[512];
-    filetime_to_iso_utc(from, from_iso, COUNTOF(from_iso));
-    filetime_to_iso_utc(to, to_iso, COUNTOF(to_iso));
-    _snwprintf(xpath, COUNTOF(xpath),
-               L"*[System[TimeCreated[@SystemTime >= '%ls' and @SystemTime <= '%ls']]]", from_iso, to_iso);
-
-    EVT_HANDLE q = EvtQuery(NULL, L"System", xpath, EvtQueryChannelPath | EvtQueryForwardDirection);
-    wchar_t path[MAX_PATH_WFT];
-    _snwprintf(path, COUNTOF(path), L"%ls\\eventlog.xml", dir);
-    FILE *out = _wfopen(path, L"w, ccs=UTF-8");
-    if (!out) {
-        if (q) EvtClose(q);
-        return;
-    }
-    fwprintf(out, L"<!-- System log filtered to disk/storahci/Ntfs/WHEA/Display/nvlddmkm/Kernel-Power, trigger +/- 2 min -->\n<Events>\n");
-
-    if (q) {
-        EVT_HANDLE ev[32];
-        DWORD returned = 0;
-        while (EvtNext(q, (DWORD)COUNTOF(ev), ev, 0, 0, &returned)) {
-            for (DWORD i = 0; i < returned; ++i) {
-                DWORD used = 0, props = 0;
-                EvtRender(NULL, ev[i], EvtRenderEventXml, 0, NULL, &used, &props);
-                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && used) {
-                    wchar_t *xml = (wchar_t *)malloc(used);
-                    if (xml && EvtRender(NULL, ev[i], EvtRenderEventXml, used, xml, &used, &props)) {
-                        if (xml_contains_provider(xml)) fwprintf(out, L"%ls\n", xml);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe; ZeroMemory(&pe, sizeof(pe)); pe.dwSize = sizeof(pe);
+        if (Process32FirstW(snap, &pe)) {
+            do {
+                if (rn >= MAX_PROCS) break;
+                ProcRow *r = &rows[rn];
+                r->pid = pe.th32ProcessID; r->ppid = pe.th32ParentProcessID;
+                _snwprintf(r->path, _countof(r->path), L"%ls", pe.szExeFile);
+                HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, r->pid);
+                if (h) {
+                    WCHAR full[MAX_PATH_W]; DWORD cc = _countof(full);
+                    if (QueryFullProcessImageNameW(h, 0, full, &cc)) _snwprintf(r->path, _countof(r->path), L"%ls", full);
+                    FILETIME c,e,k,u;
+                    if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                        ULARGE_INTEGER ku, uu; ku.LowPart=k.dwLowDateTime; ku.HighPart=k.dwHighDateTime; uu.LowPart=u.dwLowDateTime; uu.HighPart=u.dwHighDateTime;
+                        ULONGLONG now = ku.QuadPart + uu.QuadPart, old = 0;
+                        if (find_baseline(base, bn, r->pid, &old) && now >= old) {
+                            double one = (double)(now - old) / ((double)window_ms * 10000.0) * 100.0;
+                            r->cpu_one_core_pct = one;
+                            r->cpu_system_pct = one / (double)cores;
+                        }
                     }
-                    free(xml);
+                    PROCESS_MEMORY_COUNTERS_EX pmc; ZeroMemory(&pmc, sizeof(pmc)); pmc.cb = sizeof(pmc);
+                    if (GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
+                        r->working_set = pmc.WorkingSetSize; r->private_bytes = pmc.PrivateUsage;
+                    }
+                    IO_COUNTERS io; if (GetProcessIoCounters(h, &io)) { r->read_bytes = io.ReadTransferCount; r->write_bytes = io.WriteTransferCount; }
+                    GetProcessHandleCount(h, &r->handles);
+                    CloseHandle(h);
                 }
-                EvtClose(ev[i]);
+                ++rn;
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+    }
+    qsort(rows, (size_t)rn, sizeof(ProcRow), cmp_proc_cpu);
+
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\processes.csv", dir);
+    FILE *f = _wfopen(path, L"wb");
+    if (f) {
+        fputs("pid,ppid,cpu_system_pct,cpu_one_core_pct,working_set_MB,private_MB,read_MB_total,write_MB_total,handles,path\r\n", f);
+        for (int i = 0; i < rn; ++i) {
+            ProcRow *r = &rows[i];
+            fprintf(f, "%lu,%lu,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%lu,",
+                (unsigned long)r->pid, (unsigned long)r->ppid,
+                r->cpu_system_pct, r->cpu_one_core_pct,
+                (double)r->working_set / 1048576.0,
+                (double)r->private_bytes / 1048576.0,
+                (double)r->read_bytes / 1048576.0,
+                (double)r->write_bytes / 1048576.0,
+                (unsigned long)r->handles);
+            csv_w(f, r->path); fputs("\r\n", f);
+        }
+        fclose(f);
+    }
+    free(rows);
+}
+
+static const char *wct_type_name(WCT_OBJECT_TYPE t) {
+    switch (t) {
+        case WctCriticalSectionType: return "CriticalSection";
+        case WctSendMessageType: return "SendMessage";
+        case WctMutexType: return "Mutex";
+        case WctAlpcType: return "ALPC";
+        case WctComType: return "COM";
+        case WctThreadWaitType: return "ThreadWait";
+        case WctProcessWaitType: return "ProcessWait";
+        case WctThreadType: return "Thread";
+        case WctComActivationType: return "COMActivation";
+        case WctSocketIoType: return "SocketIO";
+        case WctSmbIoType: return "SMBIO";
+        default: return "Unknown";
+    }
+}
+
+static BOOL write_wait_chains(const WCHAR *dir, DWORD target_pid) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\waitchains.txt", dir);
+    FILE *f = _wfopen(path, L"wb");
+    if (!f) return FALSE;
+    fprintf(f, "Target PID: %lu\r\n", (unsigned long)target_pid);
+    if (!target_pid) { fputs("No foreground target process.\r\n", f); fclose(f); return FALSE; }
+
+    HWCT session = OpenThreadWaitChainSession(0, NULL);
+    if (!session) { fprintf(f, "OpenThreadWaitChainSession failed: %lu\r\n", GetLastError()); fclose(f); return FALSE; }
+
+    BOOL any_cycle = FALSE;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        THREADENTRY32 te; ZeroMemory(&te, sizeof(te)); te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te)) {
+            do {
+                if (te.th32OwnerProcessID != target_pid) continue;
+                WAITCHAIN_NODE_INFO nodes[WCT_MAX_NODE_COUNT];
+                DWORD count = WCT_MAX_NODE_COUNT; BOOL cycle = FALSE;
+                ZeroMemory(nodes, sizeof(nodes));
+                if (GetThreadWaitChain(session, 0, WCTP_GETINFO_ALL_FLAGS, te.th32ThreadID, &count, nodes, &cycle)) {
+                    fprintf(f, "\r\nThread %lu  cycle=%s  nodes=%lu\r\n", (unsigned long)te.th32ThreadID, cycle ? "YES" : "no", (unsigned long)count);
+                    if (cycle) any_cycle = TRUE;
+                    for (DWORD i = 0; i < count; ++i) {
+                        WAITCHAIN_NODE_INFO *n = &nodes[i];
+                        fprintf(f, "  [%lu] %-16s status=%d", (unsigned long)i, wct_type_name(n->ObjectType), (int)n->ObjectStatus);
+                        if (n->ObjectType == WctThreadType) {
+                            fprintf(f, " pid=%lu tid=%lu wait_ms=%lu switches=%lu",
+                                (unsigned long)n->ThreadObject.ProcessId,
+                                (unsigned long)n->ThreadObject.ThreadId,
+                                (unsigned long)n->ThreadObject.WaitTime,
+                                (unsigned long)n->ThreadObject.ContextSwitches);
+                        } else if (n->LockObject.ObjectName[0]) {
+                            fputs(" name=", f); write_utf8(f, n->LockObject.ObjectName);
+                        }
+                        fputs("\r\n", f);
+                    }
+                } else {
+                    fprintf(f, "Thread %lu: GetThreadWaitChain failed: %lu\r\n", (unsigned long)te.th32ThreadID, GetLastError());
+                }
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+    }
+    CloseThreadWaitChainSession(session);
+    fclose(f);
+    return any_cycle;
+}
+
+static void write_threads(const WCHAR *dir, DWORD target_pid) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\threads.csv", dir);
+    FILE *f = _wfopen(path, L"wb");
+    if (!f) return;
+    fputs("tid,base_priority,current_priority,kernel_ms,user_ms,created_utc_filetime\r\n", f);
+    if (!target_pid) { fclose(f); return; }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        THREADENTRY32 te; ZeroMemory(&te, sizeof(te)); te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te)) {
+            do {
+                if (te.th32OwnerProcessID != target_pid) continue;
+                double kms = -1.0, ums = -1.0; ULONGLONG created = 0; int pri = THREAD_PRIORITY_ERROR_RETURN;
+                HANDLE ht = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+                if (ht) {
+                    FILETIME c,e,k,u;
+                    if (GetThreadTimes(ht, &c, &e, &k, &u)) {
+                        ULARGE_INTEGER ci,ki,ui;
+                        ci.LowPart=c.dwLowDateTime; ci.HighPart=c.dwHighDateTime;
+                        ki.LowPart=k.dwLowDateTime; ki.HighPart=k.dwHighDateTime;
+                        ui.LowPart=u.dwLowDateTime; ui.HighPart=u.dwHighDateTime;
+                        created = ci.QuadPart; kms = (double)ki.QuadPart / 10000.0; ums = (double)ui.QuadPart / 10000.0;
+                    }
+                    pri = GetThreadPriority(ht);
+                    CloseHandle(ht);
+                }
+                fprintf(f, "%lu,%ld,%d,%.3f,%.3f,%llu\r\n",
+                    (unsigned long)te.th32ThreadID, (long)te.tpBasePri, pri, kms, ums, (unsigned long long)created);
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+    }
+    fclose(f);
+}
+
+static void write_modules(const WCHAR *dir, DWORD target_pid) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\modules.csv", dir);
+    FILE *f = _wfopen(path, L"wb");
+    if (!f) return;
+    fputs("base,size,module,path\r\n", f);
+    if (!target_pid) { fclose(f); return; }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, target_pid);
+    if (snap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32W me; ZeroMemory(&me, sizeof(me)); me.dwSize = sizeof(me);
+        if (Module32FirstW(snap, &me)) {
+            do {
+                fprintf(f, "0x%p,%lu,", me.modBaseAddr, (unsigned long)me.modBaseSize);
+                csv_w(f, me.szModule); fputc(',', f); csv_w(f, me.szExePath); fputs("\r\n", f);
+            } while (Module32NextW(snap, &me));
+        }
+        CloseHandle(snap);
+    }
+    fclose(f);
+}
+
+static BOOL write_minidump(const WCHAR *dir, DWORD pid) {
+    if (!pid) return FALSE;
+    HANDLE hp = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE, FALSE, pid);
+    if (!hp) hp = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hp) return FALSE;
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\target.dmp", dir);
+    HANDLE hf = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hf == INVALID_HANDLE_VALUE) { CloseHandle(hp); return FALSE; }
+    MINIDUMP_TYPE mt = (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpWithProcessThreadData);
+    BOOL ok = MiniDumpWriteDump(hp, pid, hf, mt, NULL, NULL, NULL);
+    CloseHandle(hf); CloseHandle(hp);
+    if (!ok) DeleteFileW(path);
+    return ok;
+}
+
+static DWORD scan_event_flags(const WCHAR *xml) {
+    DWORD f = 0;
+    if (wcsstr(xml, L"WHEA") || wcsstr(xml, L"HardwareError")) f |= EVENTFLAG_WHEA;
+    if (wcsstr(xml, L"storport") || wcsstr(xml, L"storahci") || wcsstr(xml, L"stornvme") || wcsstr(xml, L"<Provider Name='disk'") || wcsstr(xml, L"<Provider Name=\"disk\"")) f |= EVENTFLAG_STORAGE;
+    if (wcsstr(xml, L"Display") || wcsstr(xml, L"nvlddmkm") || wcsstr(xml, L"amdkmdag") || wcsstr(xml, L"igfx")) f |= EVENTFLAG_DISPLAY;
+    if (wcsstr(xml, L"Application Hang") || wcsstr(xml, L"AppHang")) f |= EVENTFLAG_APPHANG;
+    if (wcsstr(xml, L"Kernel-Power") || wcsstr(xml, L"Power-Troubleshooter")) f |= EVENTFLAG_POWER;
+    if (wcsstr(xml, L"Ntfs") || wcsstr(xml, L"volmgr")) f |= EVENTFLAG_NTFS;
+    return f;
+}
+
+static DWORD export_events_channel(const WCHAR *dir, const WCHAR *channel, const WCHAR *filename, DWORD lookback_ms) {
+    WCHAR query[512];
+    _snwprintf(query, _countof(query), L"*[System[(Level=1 or Level=2 or Level=3) and TimeCreated[timediff(@SystemTime) <= %lu]]]", (unsigned long)lookback_ms);
+    EVT_HANDLE q = EvtQuery(NULL, channel, query, EvtQueryChannelPath | EvtQueryReverseDirection);
+    if (!q) return 0;
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\%ls", dir, filename);
+    FILE *f = _wfopen(path, L"wb");
+    if (!f) { EvtClose(q); return 0; }
+    fputs("<!-- Recent Warning/Error/Critical events, newest first -->\r\n<Events>\r\n", f);
+    DWORD flags = 0, total = 0;
+    EVT_HANDLE ev[16]; DWORD got = 0;
+    while (total < 160 && EvtNext(q, 16, ev, 0, 0, &got)) {
+        for (DWORD i = 0; i < got && total < 160; ++i, ++total) {
+            DWORD need = 0, used = 0, props = 0;
+            EvtRender(NULL, ev[i], EvtRenderEventXml, 0, NULL, &need, &props);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && need < MAX_EVENT_XML * sizeof(WCHAR)) {
+                WCHAR *xml = (WCHAR*)malloc(need);
+                if (xml && EvtRender(NULL, ev[i], EvtRenderEventXml, need, xml, &used, &props)) {
+                    flags |= scan_event_flags(xml);
+                    write_utf8(f, xml); fputs("\r\n", f);
+                }
+                free(xml);
             }
+            EvtClose(ev[i]);
         }
-        EvtClose(q);
     }
-    fwprintf(out, L"</Events>\n");
-    fclose(out);
-}
-
-static void finalize_event_capture(void) {
-    if (!g_event.active) return;
-    heartbeat(STAGE_EVENT_FINALIZE);
-    if (g_event.metrics) {
-        fflush(g_event.metrics);
-        fclose(g_event.metrics);
-        g_event.metrics = NULL;
-    }
-    if (g_event.summary) {
-        wchar_t why[128];
-        reason_text(g_event.reasons, why, COUNTOF(why));
-        fwprintf(g_event.summary, L"Final reasons: %ls\nCapture completed normally.\n", why);
-        fflush(g_event.summary);
-        fclose(g_event.summary);
-        g_event.summary = NULL;
-    }
-    export_eventlog_window(g_event.dir, g_event.trigger_utc);
-    if (!g_cfg.quiet) wprintf(L"[event saved] %ls\n", g_event.dir);
-    ZeroMemory(&g_event, sizeof(g_event));
-}
-
-static uint32_t evaluate_triggers(const Sample *s) {
-    uint32_t flags = 0;
-    for (size_t i = 0; i < g_disk_count && i < MAX_DISKS; ++i) {
-        if (!(s->disk_mask & (1u << i))) continue;
-        if (!wcscmp(g_disk_names[i], L"_Total")) continue;
-        const DiskMetric *d = &s->disks[i];
-        if ((isfinite(d->read_latency_ms) && d->read_latency_ms >= g_cfg.latency_trigger_ms) ||
-            (isfinite(d->write_latency_ms) && d->write_latency_ms >= g_cfg.latency_trigger_ms)) {
-            flags |= TRIGGER_LATENCY;
-        }
-        if (isfinite(d->queue) && d->queue >= g_cfg.queue_trigger) flags |= TRIGGER_QUEUE;
-    }
-    if (InterlockedExchange(&g_watchdog_trigger_pending, 0)) flags |= TRIGGER_GAP;
+    fputs("</Events>\r\n", f);
+    fclose(f); EvtClose(q);
     return flags;
 }
 
-static void event_append(const Sample *s) {
-    if (!g_event.active || !g_event.metrics) return;
-    write_sample_rows(g_event.metrics, s);
-    fflush(g_event.metrics);
-    uint64_t post_ms = (uint64_t)g_cfg.post_minutes * 60ULL * 1000ULL;
-    if (s->mono_ms >= g_event.trigger_mono_ms && s->mono_ms - g_event.trigger_mono_ms >= post_ms) {
-        finalize_event_capture();
+static void write_drives(const WCHAR *dir) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\drives.csv", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    fputs("drive,type,total_GB,free_GB,free_pct\r\n", f);
+    DWORD mask = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (!(mask & (1u << i))) continue;
+        WCHAR root[4] = {(WCHAR)(L'A' + i), L':', L'\\', 0};
+        UINT type = GetDriveTypeW(root);
+        ULARGE_INTEGER freeAvail, total, freeTotal;
+        if (GetDiskFreeSpaceExW(root, &freeAvail, &total, &freeTotal)) {
+            double pct = total.QuadPart ? (double)freeTotal.QuadPart * 100.0 / (double)total.QuadPart : 0.0;
+            fprintf(f, "%c,%u,%.2f,%.2f,%.2f\r\n", 'A'+i, type,
+                (double)total.QuadPart / 1073741824.0,
+                (double)freeTotal.QuadPart / 1073741824.0, pct);
+        }
+    }
+    fclose(f);
+}
+
+static void max_recent_metrics(const Sample *ring, int count, int head, Metrics *maxm, int *max_late) {
+    ZeroMemory(maxm, sizeof(*maxm)); *max_late = 0;
+    int start = (head - count + MAX_RING) % MAX_RING;
+    for (int i = 0; i < count; ++i) {
+        const Sample *s = &ring[(start + i) % MAX_RING];
+        if (s->wake_late_ms > *max_late) *max_late = s->wake_late_ms;
+        if (s->m.cpu > maxm->cpu) maxm->cpu = s->m.cpu;
+        if (s->m.dpc > maxm->dpc) maxm->dpc = s->m.dpc;
+        if (s->m.interrupt > maxm->interrupt) maxm->interrupt = s->m.interrupt;
+        if (s->m.disk_queue > maxm->disk_queue) maxm->disk_queue = s->m.disk_queue;
+        if (s->m.commit_pct > maxm->commit_pct) maxm->commit_pct = s->m.commit_pct;
+        if (s->m.proc_queue > maxm->proc_queue) maxm->proc_queue = s->m.proc_queue;
+        if (s->m.mem_load > maxm->mem_load) maxm->mem_load = s->m.mem_load;
     }
 }
 
-static DWORD WINAPI watchdog_thread(LPVOID unused) {
-    (void)unused;
-    bool gap_reported = false;
-    while (!InterlockedCompareExchange(&g_stop, 0, 0)) {
-        Sleep(250);
-        uint64_t now = mono_ms();
-        uint64_t hb = (uint64_t)InterlockedCompareExchange64(&g_heartbeat_ms, 0, 0);
-        if (!hb) continue;
-        uint64_t gap = now - hb;
-        if (gap >= WATCHDOG_GAP_MS && !gap_reported) {
-            LONG st = InterlockedCompareExchange(&g_stage, 0, 0);
-            if (st == STAGE_EVENT_FINALIZE || st == STAGE_STOPPED) continue;
-            wchar_t line[512], ts[64];
-            FILETIME ft;
-            GetSystemTimeAsFileTime(&ft);
-            filetime_to_local_text(ft, ts, COUNTOF(ts));
-            _snwprintf(line, COUNTOF(line), L"%ls gap_ms=%llu collector_stage=%ls",
-                       ts, (unsigned long long)gap, stage_name(st));
-            log_line_locked(L"watchdog.log", line);
-            InterlockedExchange64(&g_watchdog_gap_ms, (LONG64)gap);
-            InterlockedExchange(&g_watchdog_trigger_pending, 1);
-            gap_reported = true;
-        } else if (gap < 1000) {
-            gap_reported = false;
-        }
-    }
-    return 0;
+static void write_summary(const WCHAR *dir, const Config *cfg, TriggerReason reason, const Sample *trigger_sample,
+                          const Sample *ring, int ring_count, int ring_head, DWORD event_flags, BOOL wait_cycle, BOOL dump_ok) {
+    WCHAR path[MAX_PATH_W]; _snwprintf(path, _countof(path), L"%ls\\summary.txt", dir);
+    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    Metrics mx; int max_late = 0; max_recent_metrics(ring, ring_count, ring_head, &mx, &max_late);
+    SYSTEM_INFO si; GetSystemInfo(&si);
+
+    fputs("WinFreezeTrace incident report\r\n==============================\r\n", f);
+    fprintf(f, "Trigger: %s\r\n", trigger_name(reason));
+    fprintf(f, "Time: %04u-%02u-%02u %02u:%02u:%02u.%03u local\r\n",
+        trigger_sample->ts.wYear, trigger_sample->ts.wMonth, trigger_sample->ts.wDay,
+        trigger_sample->ts.wHour, trigger_sample->ts.wMinute, trigger_sample->ts.wSecond, trigger_sample->ts.wMilliseconds);
+    fprintf(f, "Wake lateness at trigger: %d ms (threshold %lu ms)\r\n", trigger_sample->wake_late_ms, (unsigned long)cfg->stall_ms);
+    fprintf(f, "Foreground PID/TID: %lu / %lu\r\nForeground EXE: ", (unsigned long)trigger_sample->fg_pid, (unsigned long)trigger_sample->fg_tid); write_utf8(f, trigger_sample->fg_path);
+    fputs("\r\nWindow class: ", f); write_utf8(f, trigger_sample->fg_class);
+    fputs("\r\nForeground title: ", f); write_utf8(f, trigger_sample->fg_title); fputs("\r\n", f);
+    fprintf(f, "Foreground responsiveness test: %s\r\n", trigger_sample->fg_hung ? "TIMEOUT/HUNG" : "responded");
+    fprintf(f, "Logical CPU: %lu\r\n", (unsigned long)si.dwNumberOfProcessors);
+    fprintf(f, "Recent maxima: CPU %.1f%% | DPC %.1f%% | Interrupt %.1f%% | DiskQ %.2f | Commit %.1f%% | ProcQ %.1f | WakeLate %d ms\r\n",
+        mx.cpu, mx.dpc, mx.interrupt, mx.disk_queue, mx.commit_pct, mx.proc_queue, max_late);
+    fprintf(f, "Wait-chain cycle: %s\r\nMinidump: %s\r\n", wait_cycle ? "YES" : "no", dump_ok ? "written" : (cfg->make_dump ? "not available" : "disabled"));
+
+    fputs("\r\nLikely-cause analysis\r\n---------------------\r\n", f);
+    int findings = 0;
+    if (wait_cycle) { fputs("[HIGH] A wait-chain cycle was found in the foreground process. This is strong evidence of a deadlock/circular wait. See waitchains.txt and target.dmp.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_WHEA) { fputs("[HIGH] Recent WHEA/hardware-error events exist. Check CPU/RAM/PCIe/GPU/storage hardware and firmware. See events_system.xml.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_STORAGE) { fputs("[HIGH/MED] Recent storage driver/disk events exist (storport/storahci/stornvme/disk). This can explain whole-system stalls. See events_system.xml.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_DISPLAY) { fputs("[MED] Recent display/GPU-driver events exist. A GPU driver timeout/reset may look like a freeze. See events_system.xml.\r\n", f); ++findings; }
+    if (event_flags & EVENTFLAG_APPHANG) { fputs("[MED] Windows logged an Application Hang near this incident. Correlate the app name/time with the foreground target.\r\n", f); ++findings; }
+    if (mx.commit_pct >= 95.0 || mx.mem_load >= 97) { fputs("[MED] Memory/commit pressure was extreme before the incident. Paging or allocation stalls are plausible.\r\n", f); ++findings; }
+    if (mx.dpc >= 20.0 || mx.interrupt >= 20.0) { fputs("[MED] DPC/interrupt CPU time spiked. This points toward a driver/device interrupt-latency problem.\r\n", f); ++findings; }
+    if (mx.cpu >= 97.0 && mx.proc_queue > (double)si.dwNumberOfProcessors) { fputs("[MED] CPU saturation plus a long processor queue was observed. Scheduler starvation is plausible; check top entries in processes.csv.\r\n", f); ++findings; }
+    if (mx.disk_queue >= 4.0 && mx.cpu < 90.0) { fputs("[MED] Disk queue was elevated without matching CPU saturation. Storage latency/queueing is plausible; correlate with storage events.\r\n", f); ++findings; }
+    if (reason == TRIGGER_APP_HANG && max_late < (int)cfg->stall_ms) { fputs("[MED] The foreground app stopped responding while the watchdog itself kept scheduling normally. This favors an application-specific wait/deadlock over a whole-system freeze.\r\n", f); ++findings; }
+    if (reason == TRIGGER_SCHEDULER_STALL && findings == 0) { fputs("[LOW] The watchdog was delayed but no strong CPU/memory/disk/event-log signature was captured. Suspect a low-level driver, firmware, GPU, storage, or transient scheduler stall. target.dmp helps only for the foreground app; a kernel ETW trace may be needed if this repeats.\r\n", f); ++findings; }
+    if (!findings) fputs("[LOW] No single cause is strong enough from this capture. Use timeline.csv + processes.csv + waitchains.txt + Event Log correlation.\r\n", f);
+
+    fputs("\r\nFiles\r\n-----\r\n", f);
+    fputs("timeline.csv        Rolling pre-trigger history kept in RAM (no continuous disk writes).\r\n", f);
+    fputs("processes.csv       Trigger-time process CPU/memory/I/O snapshot, sorted by CPU.\r\n", f);
+    fputs("waitchains.txt      Wait Chain Traversal for all threads in the foreground process.\r\n", f);
+    fputs("threads.csv         Foreground-process thread IDs, priorities, and accumulated CPU time.\r\n", f);
+    fputs("modules.csv         DLL/module map for the foreground process.\r\n", f);
+    fputs("target.dmp          Small thread-focused minidump, when access allows.\r\n", f);
+    fputs("events_system.xml   Recent System critical/error/warning events.\r\n", f);
+    fputs("events_application.xml Recent Application critical/error/warning events.\r\n", f);
+    fputs("drives.csv          Free-space snapshot to spot critically full volumes.\r\n", f);
+    fclose(f);
 }
 
-static void print_status(const Sample *s) {
-    if (g_cfg.quiet) return;
-    double worst = 0.0, qmax = 0.0;
-    const wchar_t *name = L"-";
-    for (size_t i = 0; i < g_disk_count && i < MAX_DISKS; ++i) {
-        if (!(s->disk_mask & (1u << i))) continue;
-        if (!wcscmp(g_disk_names[i], L"_Total")) continue;
-        double r = isfinite(s->disks[i].read_latency_ms) ? s->disks[i].read_latency_ms : 0.0;
-        double w = isfinite(s->disks[i].write_latency_ms) ? s->disks[i].write_latency_ms : 0.0;
-        double m = r > w ? r : w;
-        if (m > worst) { worst = m; name = g_disk_names[i]; }
-        if (isfinite(s->disks[i].queue) && s->disks[i].queue > qmax) qmax = s->disks[i].queue;
-    }
-    wprintf(L"\rCPU %5.1f%%  DPC %5.1f%%  disk worst %8.1f ms %-18ls  q %5.1f  PDH %6.1f ms   ",
-            s->cpu_pct, s->dpc_pct, worst, name, qmax, s->pdh_ms);
-    fflush(stdout);
+static void deep_capture(const Config *cfg, TriggerReason reason, const Sample *trigger_sample,
+                         const Sample *ring, int ring_count, int ring_head) {
+    WCHAR dir[MAX_PATH_W]; make_report_dir(cfg, &trigger_sample->ts, reason, dir, _countof(dir));
+    write_timeline(dir, ring, ring_count, ring_head);
+    write_process_snapshot(dir);
+    BOOL cycle = write_wait_chains(dir, trigger_sample->fg_pid);
+    write_threads(dir, trigger_sample->fg_pid);
+    write_modules(dir, trigger_sample->fg_pid);
+    BOOL dump_ok = FALSE;
+    if (cfg->make_dump) dump_ok = write_minidump(dir, trigger_sample->fg_pid);
+    DWORD flags = 0;
+    flags |= export_events_channel(dir, L"System", L"events_system.xml", 5 * 60 * 1000);
+    flags |= export_events_channel(dir, L"Application", L"events_application.xml", 5 * 60 * 1000);
+    write_drives(dir);
+    write_summary(dir, cfg, reason, trigger_sample, ring, ring_count, ring_head, flags, cycle, dump_ok);
 }
 
-static int run_monitor(int argc, wchar_t **argv, int start_index, bool service_mode) {
-    InterlockedExchange(&g_stop, 0);
-    InterlockedExchange64(&g_heartbeat_ms, 0);
-    InterlockedExchange(&g_stage, STAGE_STARTING);
-    InterlockedExchange(&g_watchdog_trigger_pending, 0);
-    InterlockedExchange64(&g_watchdog_gap_ms, 0);
+static void parse_args(Config *cfg) {
+    cfg->interval_ms = 1000;
+    cfg->history_seconds = 180;
+    cfg->stall_ms = 1500;
+    cfg->hang_timeout_ms = 250;
+    cfg->hang_samples = 3;
+    cfg->cooldown_seconds = 60;
+    cfg->make_dump = TRUE;
+    cfg->background = TRUE;
+    default_report_root(cfg->report_root, _countof(cfg->report_root));
 
-    if (!parse_args(argc, argv, start_index, service_mode)) {
-        return 2;
+    int argc = 0; LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return;
+    for (int i = 1; i < argc; ++i) {
+        if (!_wcsicmp(argv[i], L"--no-dump")) cfg->make_dump = FALSE;
+        else if (!_wcsicmp(argv[i], L"--background")) cfg->background = TRUE;
+        else if (!_wcsicmp(argv[i], L"--interval") && i + 1 < argc) cfg->interval_ms = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--history") && i + 1 < argc) cfg->history_seconds = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--stall-ms") && i + 1 < argc) cfg->stall_ms = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--hang-timeout-ms") && i + 1 < argc) cfg->hang_timeout_ms = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--hang-samples") && i + 1 < argc) cfg->hang_samples = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--cooldown") && i + 1 < argc) cfg->cooldown_seconds = wcstoul(argv[++i], NULL, 10);
+        else if (!_wcsicmp(argv[i], L"--report-dir") && i + 1 < argc) _snwprintf(cfg->report_root, _countof(cfg->report_root), L"%ls", argv[++i]);
     }
+    LocalFree(argv);
+    if (cfg->interval_ms < 250) cfg->interval_ms = 250;
+    if (cfg->history_seconds < 30) cfg->history_seconds = 30;
+    if (cfg->history_seconds > 600) cfg->history_seconds = 600;
+    if (cfg->stall_ms < 500) cfg->stall_ms = 500;
+    if (cfg->hang_samples < 2) cfg->hang_samples = 2;
+    ensure_dir(cfg->report_root);
+}
 
-    InitializeCriticalSection(&g_log_lock);
-    if (!service_mode) SetConsoleCtrlHandler(console_handler, TRUE);
-    if (!ensure_dir_recursive(g_cfg.log_dir)) {
-        fwprintf(stderr, L"Cannot create log directory: %ls (error %lu)\n", g_cfg.log_dir, GetLastError());
-        DeleteCriticalSection(&g_log_lock);
-        return 3;
-    }
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show) {
+    (void)hInst; (void)hPrev; (void)cmd; (void)show;
+    HANDLE singleton = CreateMutexW(NULL, TRUE, L"Local\\WinFreezeTrace.Singleton.v2");
+    if (!singleton || GetLastError() == ERROR_ALREADY_EXISTS) return 2;
 
-    uint64_t ring_ms = (uint64_t)g_cfg.ring_minutes * 60ULL * 1000ULL;
-    g_ring_cap = (size_t)(ring_ms / g_cfg.interval_ms) + 16;
-    g_ring = (Sample *)calloc(g_ring_cap, sizeof(Sample));
-    if (!g_ring) {
-        fwprintf(stderr, L"Cannot allocate ring buffer.\n");
-        DeleteCriticalSection(&g_log_lock);
-        return 4;
-    }
+    QueryPerformanceFrequency(&g_qpf);
+    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
 
-    PdhState pdh;
-    if (!pdh_init(&pdh)) {
-        fwprintf(stderr, L"PDH initialization failed.\n");
-        free(g_ring);
-        g_ring = NULL;
-        DeleteCriticalSection(&g_log_lock);
-        return 5;
-    }
+    Config cfg; parse_args(&cfg);
+    PdhState pdh; pdh_init(&pdh);
+    HANDLE hk = CreateThread(NULL, 0, hotkey_thread, NULL, 0, NULL);
+    if (hk) { SetThreadPriority(hk, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(hk); }
 
-    if (!open_rolling()) {
-        fwprintf(stderr, L"Warning: cannot open rolling.csv; watchdog.log may still work.\n");
-    }
+    Sample ring[MAX_RING]; ZeroMemory(ring, sizeof(ring));
+    int ring_head = 0, ring_count = 0;
+    int max_samples = (int)(cfg.history_seconds * 1000 / cfg.interval_ms);
+    if (max_samples < 1) max_samples = 1;
+    if (max_samples > MAX_RING) max_samples = MAX_RING;
+    DWORD hung_streak = 0;
+    double last_trigger_ms = -1e12;
 
-    heartbeat(STAGE_STARTING);
-    HANDLE watchdog = CreateThread(NULL, 0, watchdog_thread, NULL, 0, NULL);
+    for (;;) {
+        double before_sleep = qpc_ms();
+        Sleep(cfg.interval_ms);
+        double wake = qpc_ms();
+        int late = (int)((wake - before_sleep) - (double)cfg.interval_ms);
+        if (late < 0) late = 0;
 
-    if (!g_cfg.quiet) {
-        wprintf(L"%ls %ls\n", APP_NAME, VERSION_W);
-        wprintf(L"interval=%lu ms, ring=%lu min, trigger latency=%.0f ms, queue=%.1f\n",
-                (unsigned long)g_cfg.interval_ms, (unsigned long)g_cfg.ring_minutes,
-                g_cfg.latency_trigger_ms, g_cfg.queue_trigger);
-        wprintf(L"logs: %ls\nPress Ctrl+C to stop.\n\n", g_cfg.log_dir);
-    }
+        Sample s; ZeroMemory(&s, sizeof(s));
+        GetLocalTime(&s.ts);
+        s.wake_late_ms = late;
+        collect_metrics(&pdh, &s.m);
+        get_foreground(&s.fg_pid, &s.fg_tid, s.fg_title, _countof(s.fg_title), s.fg_class, _countof(s.fg_class), s.fg_path, _countof(s.fg_path), &s.fg_hung, cfg.hang_timeout_ms);
 
-    uint64_t seq = 0;
-    uint64_t last_sample_ms = mono_ms();
-    uint64_t next_due = last_sample_ms;
+        if (s.fg_hung) ++hung_streak; else hung_streak = 0;
+        ring[ring_head] = s;
+        ring_head = (ring_head + 1) % MAX_RING;
+        if (ring_count < max_samples) ++ring_count;
 
-    while (!InterlockedCompareExchange(&g_stop, 0, 0)) {
-        uint64_t now = mono_ms();
-        if (now < next_due) {
-            heartbeat(STAGE_SLEEP);
-            DWORD sleep_ms = (DWORD)(next_due - now);
-            Sleep(sleep_ms > 50 ? 50 : sleep_ms);
-            continue;
+        TriggerReason reason = 0;
+        if (InterlockedExchange(&g_manual_trigger, 0)) reason = TRIGGER_MANUAL;
+        else if ((DWORD)late >= cfg.stall_ms && (DWORD)late < 60000) reason = TRIGGER_SCHEDULER_STALL;
+        else if (hung_streak >= cfg.hang_samples) reason = TRIGGER_APP_HANG;
+
+        double now = qpc_ms();
+        if (reason && (now - last_trigger_ms) >= (double)cfg.cooldown_seconds * 1000.0) {
+            deep_capture(&cfg, reason, &s, ring, ring_count, ring_head);
+            last_trigger_ms = qpc_ms();
+            hung_streak = 0;
         }
-
-        Sample sample;
-        ZeroMemory(&sample, sizeof(sample));
-        sample.seq = ++seq;
-        sample.mono_ms = mono_ms();
-        GetSystemTimeAsFileTime(&sample.utc);
-        sample.interval_ms = (double)(sample.mono_ms - last_sample_ms);
-        last_sample_ms = sample.mono_ms;
-
-        uint64_t t0 = mono_ms();
-        heartbeat(STAGE_PDH_COLLECT);
-        PDH_STATUS st = PdhCollectQueryData(pdh.query);
-        uint64_t t1 = mono_ms();
-        sample.pdh_ms = (double)(t1 - t0);
-        if (st != ERROR_SUCCESS) {
-            wchar_t line[256], ts[64];
-            filetime_to_local_text(sample.utc, ts, COUNTOF(ts));
-            _snwprintf(line, COUNTOF(line), L"%ls PdhCollectQueryData failed 0x%08lx", ts, (unsigned long)st);
-            log_line_locked(L"errors.log", line);
-        }
-
-        heartbeat(STAGE_PDH_FORMAT);
-        sample.cpu_pct = pdh_value(pdh.cpu);
-        sample.dpc_pct = pdh_value(pdh.dpc);
-        sample.interrupt_pct = pdh_value(pdh.interrupt);
-        sample.avail_mb = pdh_value(pdh.avail_mb);
-        sample.pages_sec = pdh_value(pdh.pages_sec);
-        sample.process_count = pdh_value(pdh.processes);
-        sample.thread_count = pdh_value(pdh.threads);
-        sample.uptime_sec = pdh_value(pdh.uptime);
-        collect_disk_arrays(&pdh, &sample);
-
-        uint64_t p0 = mono_ms();
-        heartbeat(STAGE_PROCESS_SCAN);
-        collect_process_io(&sample);
-        sample.proc_ms = (double)(mono_ms() - p0);
-
-        sample.trigger_flags = evaluate_triggers(&sample);
-
-        heartbeat(STAGE_RING_UPDATE);
-        ring_push(&sample);
-
-        if (sample.trigger_flags) start_event_capture(&sample, sample.trigger_flags);
-
-        heartbeat(STAGE_FILE_WRITE);
-        rolling_write(&sample);
-        event_append(&sample);
-        print_status(&sample);
-
-        heartbeat(STAGE_SLEEP);
-        next_due += g_cfg.interval_ms;
-        uint64_t after = mono_ms();
-        if (after > next_due + (uint64_t)g_cfg.interval_ms * 4ULL) next_due = after + g_cfg.interval_ms;
     }
 
-    if (!g_cfg.quiet) wprintf(L"\nStopping...\n");
-    if (g_event.active) {
-        if (g_event.summary) {
-            fwprintf(g_event.summary, L"Capture interrupted/stopped before post-window completed.\n");
-            fflush(g_event.summary);
-        }
-        finalize_event_capture();
-    }
-    heartbeat(STAGE_STOPPED);
-    if (watchdog) {
-        WaitForSingleObject(watchdog, 2000);
-        CloseHandle(watchdog);
-    }
-    close_rolling();
     pdh_close(&pdh);
-    free(g_ring);
-    g_ring = NULL;
-    g_ring_cap = g_ring_count = g_ring_head = 0;
-    DeleteCriticalSection(&g_log_lock);
+    ReleaseMutex(singleton); CloseHandle(singleton);
     return 0;
-}
-
-static const wchar_t *service_state_name(DWORD state) {
-    switch (state) {
-        case SERVICE_STOPPED: return L"STOPPED";
-        case SERVICE_START_PENDING: return L"START_PENDING";
-        case SERVICE_STOP_PENDING: return L"STOP_PENDING";
-        case SERVICE_RUNNING: return L"RUNNING";
-        case SERVICE_CONTINUE_PENDING: return L"CONTINUE_PENDING";
-        case SERVICE_PAUSE_PENDING: return L"PAUSE_PENDING";
-        case SERVICE_PAUSED: return L"PAUSED";
-        default: return L"UNKNOWN";
-    }
-}
-
-static void service_set_status(DWORD state, DWORD win32_exit, DWORD wait_hint) {
-    ZeroMemory(&g_service_status, sizeof(g_service_status));
-    g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_service_status.dwCurrentState = state;
-    g_service_status.dwWin32ExitCode = win32_exit;
-    g_service_status.dwWaitHint = wait_hint;
-    g_service_status.dwControlsAccepted =
-        (state == SERVICE_RUNNING) ? (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN) : 0;
-    if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
-}
-
-static void WINAPI service_ctrl_handler(DWORD control) {
-    switch (control) {
-        case SERVICE_CONTROL_STOP:
-        case SERVICE_CONTROL_SHUTDOWN:
-            InterlockedExchange(&g_stop, 1);
-            service_set_status(SERVICE_STOP_PENDING, NO_ERROR, 20000);
-            break;
-        case SERVICE_CONTROL_INTERROGATE:
-        default:
-            if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
-            break;
-    }
-}
-
-static void WINAPI service_main(DWORD argc, LPWSTR *argv) {
-    (void)argc;
-    (void)argv;
-    g_service_status_handle = RegisterServiceCtrlHandlerW(SERVICE_NAME, service_ctrl_handler);
-    if (!g_service_status_handle) return;
-
-    service_set_status(SERVICE_START_PENDING, NO_ERROR, 5000);
-    service_set_status(SERVICE_RUNNING, NO_ERROR, 0);
-    int rc = run_monitor(g_main_argc, g_main_argv, 2, true);
-
-    if (rc == 0) {
-        service_set_status(SERVICE_STOPPED, NO_ERROR, 0);
-    } else {
-        ZeroMemory(&g_service_status, sizeof(g_service_status));
-        g_service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-        g_service_status.dwCurrentState = SERVICE_STOPPED;
-        g_service_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
-        g_service_status.dwServiceSpecificExitCode = (DWORD)rc;
-        if (g_service_status_handle) SetServiceStatus(g_service_status_handle, &g_service_status);
-    }
-}
-
-static bool query_service_status_process(SC_HANDLE svc, SERVICE_STATUS_PROCESS *ssp) {
-    DWORD needed = 0;
-    ZeroMemory(ssp, sizeof(*ssp));
-    return QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)ssp, sizeof(*ssp), &needed) != FALSE;
-}
-
-static bool wait_for_service_state(SC_HANDLE svc, DWORD target, DWORD timeout_ms) {
-    uint64_t deadline = mono_ms() + timeout_ms;
-    SERVICE_STATUS_PROCESS ssp;
-    while (mono_ms() < deadline) {
-        if (!query_service_status_process(svc, &ssp)) return false;
-        if (ssp.dwCurrentState == target) return true;
-        if (target == SERVICE_RUNNING && ssp.dwCurrentState == SERVICE_STOPPED) return false;
-        Sleep(200);
-    }
-    return false;
-}
-
-static void print_scm_error(const wchar_t *action, DWORD err) {
-    if (err == ERROR_ACCESS_DENIED) {
-        fwprintf(stderr, L"%ls failed: access denied. Open CMD/PowerShell as Administrator.\n", action);
-    } else if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
-        fwprintf(stderr, L"%ls failed: WinFreezeTrace service is not installed.\n", action);
-    } else {
-        fwprintf(stderr, L"%ls failed (Windows error %lu).\n", action, (unsigned long)err);
-    }
-}
-
-static int command_install(int argc, wchar_t **argv) {
-    if (!parse_args(argc, argv, 2, true)) return 2;
-
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
-    if (!scm) {
-        print_scm_error(L"Install", GetLastError());
-        return 4;
-    }
-
-    bool updated = false;
-    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME,
-        SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE);
-    if (svc) {
-        updated = true;
-        SERVICE_STATUS_PROCESS existing_status;
-        if (query_service_status_process(svc, &existing_status) &&
-            existing_status.dwCurrentState != SERVICE_STOPPED) {
-            SERVICE_STATUS stop_status;
-            if (!ControlService(svc, SERVICE_CONTROL_STOP, &stop_status)) {
-                DWORD stop_err = GetLastError();
-                if (stop_err != ERROR_SERVICE_NOT_ACTIVE) {
-                    CloseServiceHandle(svc);
-                    CloseServiceHandle(scm);
-                    print_scm_error(L"Stop old service before update", stop_err);
-                    return 5;
-                }
-            }
-            if (!wait_for_service_state(svc, SERVICE_STOPPED, 30000)) {
-                CloseServiceHandle(svc);
-                CloseServiceHandle(scm);
-                fwprintf(stderr, L"Existing service did not stop; update was not applied.\n");
-                return 5;
-            }
-        }
-    } else {
-        DWORD err = GetLastError();
-        if (err != ERROR_SERVICE_DOES_NOT_EXIST) {
-            CloseServiceHandle(scm);
-            print_scm_error(L"Open service", err);
-            return 5;
-        }
-    }
-
-    /* Copy only after the old service has stopped, so an in-use image cannot block an update. */
-    wchar_t exe[MAX_PATH_WFT];
-    bool path_changed = false;
-    if (!install_cli_binary(exe, COUNTOF(exe), &path_changed)) {
-        DWORD err = GetLastError();
-        if (svc) CloseServiceHandle(svc);
-        CloseServiceHandle(scm);
-        if (err == ERROR_ACCESS_DENIED)
-            fwprintf(stderr, L"Install failed: access denied. Open CMD/PowerShell as Administrator.\n");
-        else
-            fwprintf(stderr, L"Install failed while copying CLI/updating PATH (Windows error %lu).\n", (unsigned long)err);
-        return 3;
-    }
-
-    wchar_t bin_path[4096];
-    _snwprintf(bin_path, COUNTOF(bin_path),
-        L"\"%ls\" service-run --quiet --interval %lu --ring-minutes %lu --pre-minutes %lu "
-        L"--post-minutes %lu --latency-ms %.3f --queue %.3f --log-dir \"%ls\"%ls",
-        exe,
-        (unsigned long)g_cfg.interval_ms,
-        (unsigned long)g_cfg.ring_minutes,
-        (unsigned long)g_cfg.pre_minutes,
-        (unsigned long)g_cfg.post_minutes,
-        g_cfg.latency_trigger_ms,
-        g_cfg.queue_trigger,
-        g_cfg.log_dir,
-        g_cfg.process_io ? L"" : L" --no-process-io");
-    bin_path[COUNTOF(bin_path) - 1] = L'\0';
-
-    if (svc) {
-        if (!ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
-                                  bin_path, NULL, NULL, NULL, NULL, NULL, SERVICE_DISPLAY_NAME)) {
-            DWORD err = GetLastError();
-            CloseServiceHandle(svc);
-            CloseServiceHandle(scm);
-            print_scm_error(L"Update service", err);
-            return 5;
-        }
-    } else {
-        svc = CreateServiceW(
-            scm, SERVICE_NAME, SERVICE_DISPLAY_NAME,
-            SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE,
-            SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
-            bin_path, NULL, NULL, NULL, NULL, NULL);
-        if (!svc) {
-            DWORD err = GetLastError();
-            CloseServiceHandle(scm);
-            print_scm_error(L"Create service", err);
-            return 6;
-        }
-    }
-
-    SERVICE_DESCRIPTIONW desc;
-    desc.lpDescription = L"Low-overhead black-box recorder for Windows freezes, disk stalls, DPC/interrupt spikes and process I/O.";
-    ChangeServiceConfig2W(svc, SERVICE_CONFIG_DESCRIPTION, &desc);
-
-    SC_ACTION actions[3] = {
-        { SC_ACTION_RESTART, 5000 },
-        { SC_ACTION_RESTART, 10000 },
-        { SC_ACTION_RESTART, 30000 }
-    };
-    SERVICE_FAILURE_ACTIONSW failure;
-    ZeroMemory(&failure, sizeof(failure));
-    failure.dwResetPeriod = 86400;
-    failure.cActions = (DWORD)COUNTOF(actions);
-    failure.lpsaActions = actions;
-    ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS, &failure);
-
-    if (!StartServiceW(svc, 0, NULL)) {
-        DWORD err = GetLastError();
-        if (err != ERROR_SERVICE_ALREADY_RUNNING) {
-            CloseServiceHandle(svc);
-            CloseServiceHandle(scm);
-            print_scm_error(L"Start service", err);
-            return 7;
-        }
-    }
-
-    bool running = wait_for_service_state(svc, SERVICE_RUNNING, 15000);
-    CloseServiceHandle(svc);
-    CloseServiceHandle(scm);
-
-    wprintf(L"WinFreezeTrace service %ls.\n", updated ? L"updated" : L"installed");
-    wprintf(L"Startup: Automatic (starts at Windows boot)\n");
-    wprintf(L"State: %ls\n", running ? L"RUNNING" : L"start requested; check `winfreezetrace status`");
-    wprintf(L"Logs: %ls\n", g_cfg.log_dir);
-    wprintf(L"CLI: %ls\n", exe);
-    wprintf(L"PATH: %ls\n", path_changed ? L"added to Machine PATH" : L"already configured");
-    wprintf(L"Open a NEW CMD/PowerShell window, then use `winfreezetrace` from anywhere.\n");
-    return 0;
-}
-
-static int command_start(void) {
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-    if (!scm) { print_scm_error(L"Start", GetLastError()); return 2; }
-    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS);
-    if (!svc) { DWORD e = GetLastError(); CloseServiceHandle(scm); print_scm_error(L"Start", e); return 3; }
-
-    SERVICE_STATUS_PROCESS ssp;
-    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState == SERVICE_RUNNING) {
-        wprintf(L"WinFreezeTrace is already RUNNING (PID %lu).\n", (unsigned long)ssp.dwProcessId);
-        CloseServiceHandle(svc); CloseServiceHandle(scm); return 0;
-    }
-
-    if (!StartServiceW(svc, 0, NULL)) {
-        DWORD e = GetLastError();
-        if (e != ERROR_SERVICE_ALREADY_RUNNING) {
-            CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Start", e); return 4;
-        }
-    }
-    bool ok = wait_for_service_state(svc, SERVICE_RUNNING, 15000);
-    if (ok && query_service_status_process(svc, &ssp))
-        wprintf(L"WinFreezeTrace RUNNING (PID %lu).\n", (unsigned long)ssp.dwProcessId);
-    else
-        fwprintf(stderr, L"Service did not reach RUNNING state within the wait window.\n");
-    CloseServiceHandle(svc); CloseServiceHandle(scm);
-    return ok ? 0 : 5;
-}
-
-static int command_stop(void) {
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-    if (!scm) { print_scm_error(L"Stop", GetLastError()); return 2; }
-    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS);
-    if (!svc) { DWORD e = GetLastError(); CloseServiceHandle(scm); print_scm_error(L"Stop", e); return 3; }
-
-    SERVICE_STATUS_PROCESS ssp;
-    if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState == SERVICE_STOPPED) {
-        wprintf(L"WinFreezeTrace is already STOPPED.\n");
-        CloseServiceHandle(svc); CloseServiceHandle(scm); return 0;
-    }
-
-    SERVICE_STATUS status;
-    if (!ControlService(svc, SERVICE_CONTROL_STOP, &status)) {
-        DWORD e = GetLastError();
-        if (e != ERROR_SERVICE_NOT_ACTIVE) {
-            CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Stop", e); return 4;
-        }
-    }
-    bool ok = wait_for_service_state(svc, SERVICE_STOPPED, 30000);
-    if (ok) wprintf(L"WinFreezeTrace STOPPED.\n");
-    else fwprintf(stderr, L"Service did not stop within the wait window.\n");
-    CloseServiceHandle(svc); CloseServiceHandle(scm);
-    return ok ? 0 : 5;
-}
-
-static int command_status(void) {
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-    if (!scm) { print_scm_error(L"Status", GetLastError()); return 2; }
-    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG);
-    if (!svc) {
-        DWORD e = GetLastError();
-        CloseServiceHandle(scm);
-        if (e == ERROR_SERVICE_DOES_NOT_EXIST) {
-            wprintf(L"WinFreezeTrace service: NOT INSTALLED\n");
-            return 1;
-        }
-        print_scm_error(L"Status", e); return 3;
-    }
-
-    SERVICE_STATUS_PROCESS ssp;
-    if (!query_service_status_process(svc, &ssp)) {
-        DWORD e = GetLastError(); CloseServiceHandle(svc); CloseServiceHandle(scm); print_scm_error(L"Status", e); return 4;
-    }
-
-    DWORD needed = 0;
-    QueryServiceConfigW(svc, NULL, 0, &needed);
-    QUERY_SERVICE_CONFIGW *cfg = needed ? (QUERY_SERVICE_CONFIGW *)malloc(needed) : NULL;
-    if (cfg && QueryServiceConfigW(svc, cfg, needed, &needed)) {
-        const wchar_t *startup = L"Other";
-        if (cfg->dwStartType == SERVICE_AUTO_START) startup = L"Automatic";
-        else if (cfg->dwStartType == SERVICE_DEMAND_START) startup = L"Manual";
-        else if (cfg->dwStartType == SERVICE_DISABLED) startup = L"Disabled";
-        wprintf(L"Service: WinFreezeTrace\nState: %ls\nPID: %lu\nStartup: %ls\nBinary: %ls\n",
-                service_state_name(ssp.dwCurrentState), (unsigned long)ssp.dwProcessId,
-                startup, cfg->lpBinaryPathName ? cfg->lpBinaryPathName : L"-");
-    } else {
-        wprintf(L"Service: WinFreezeTrace\nState: %ls\nPID: %lu\n",
-                service_state_name(ssp.dwCurrentState), (unsigned long)ssp.dwProcessId);
-    }
-    free(cfg);
-    CloseServiceHandle(svc); CloseServiceHandle(scm);
-    return 0;
-}
-
-static int command_uninstall(void) {
-    bool service_removed = false;
-    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-    if (!scm) { print_scm_error(L"Uninstall", GetLastError()); return 2; }
-
-    SC_HANDLE svc = OpenServiceW(scm, SERVICE_NAME, SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE);
-    if (svc) {
-        SERVICE_STATUS_PROCESS ssp;
-        if (query_service_status_process(svc, &ssp) && ssp.dwCurrentState != SERVICE_STOPPED) {
-            SERVICE_STATUS status;
-            ControlService(svc, SERVICE_CONTROL_STOP, &status);
-            wait_for_service_state(svc, SERVICE_STOPPED, 30000);
-        }
-
-        if (!DeleteService(svc)) {
-            DWORD e = GetLastError();
-            CloseServiceHandle(svc); CloseServiceHandle(scm);
-            print_scm_error(L"Delete service", e);
-            return 4;
-        }
-        service_removed = true;
-        CloseServiceHandle(svc);
-    } else {
-        DWORD e = GetLastError();
-        if (e != ERROR_SERVICE_DOES_NOT_EXIST) {
-            CloseServiceHandle(scm);
-            print_scm_error(L"Uninstall", e);
-            return 3;
-        }
-    }
-    CloseServiceHandle(scm);
-
-    wchar_t install_dir[MAX_PATH_WFT], installed_exe[MAX_PATH_WFT];
-    get_install_paths(install_dir, COUNTOF(install_dir), installed_exe, COUNTOF(installed_exe));
-    bool path_changed = false;
-    if (!update_machine_path(install_dir, false, &path_changed)) {
-        fwprintf(stderr, L"Warning: Machine PATH cleanup failed (Windows error %lu).\n",
-                 (unsigned long)GetLastError());
-    }
-
-    wchar_t current_exe[MAX_PATH_WFT];
-    DWORD n = GetModuleFileNameW(NULL, current_exe, (DWORD)COUNTOF(current_exe));
-    bool running_from_installed = n > 0 && n < COUNTOF(current_exe) &&
-                                  _wcsicmp(current_exe, installed_exe) == 0;
-    if (running_from_installed) {
-        if (!MoveFileExW(installed_exe, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)) {
-            fwprintf(stderr, L"Warning: CLI binary could not be scheduled for deletion (Windows error %lu).\n",
-                     (unsigned long)GetLastError());
-        } else {
-            /* Directory deletion is queued after the executable deletion. */
-            MoveFileExW(install_dir, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-        }
-    } else {
-        DeleteFileW(installed_exe);
-        RemoveDirectoryW(install_dir);
-    }
-
-    wprintf(L"WinFreezeTrace service: %ls.\n", service_removed ? L"removed" : L"already absent");
-    wprintf(L"Global CLI PATH entry: %ls.\n", path_changed ? L"removed" : L"already absent");
-    if (running_from_installed)
-        wprintf(L"Installed CLI binary will be deleted at the next reboot because it is currently running.\n");
-    wprintf(L"Logs were kept. Open a NEW terminal for PATH removal to be reflected there.\n");
-    return 0;
-}
-
-static int command_logs(void) {
-    wchar_t path[MAX_PATH_WFT];
-    default_log_dir(path, COUNTOF(path), true);
-    make_absolute_path(path, COUNTOF(path));
-    wprintf(L"%ls\n", path);
-    return 0;
-}
-
-static int command_service_run(void) {
-    SERVICE_TABLE_ENTRYW table[] = {
-        { (LPWSTR)SERVICE_NAME, service_main },
-        { NULL, NULL }
-    };
-    if (!StartServiceCtrlDispatcherW(table)) {
-        DWORD e = GetLastError();
-        if (e == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-            fwprintf(stderr, L"`service-run` is internal and must be launched by Windows Service Control Manager.\n");
-        } else {
-            fwprintf(stderr, L"StartServiceCtrlDispatcher failed (Windows error %lu).\n", (unsigned long)e);
-        }
-        return 8;
-    }
-    return 0;
-}
-
-int wmain(int argc, wchar_t **argv) {
-    g_main_argc = argc;
-    g_main_argv = argv;
-
-    if (argc <= 1) return run_monitor(argc, argv, 1, false);
-
-    const wchar_t *cmd = argv[1];
-    if (!wcscmp(cmd, L"--help") || !wcscmp(cmd, L"-h") || !wcscmp(cmd, L"help")) {
-        print_usage();
-        return 0;
-    }
-    if (!wcscmp(cmd, L"run")) return run_monitor(argc, argv, 2, false);
-    if (!wcscmp(cmd, L"install")) return command_install(argc, argv);
-    if (!wcscmp(cmd, L"start")) return command_start();
-    if (!wcscmp(cmd, L"stop")) return command_stop();
-    if (!wcscmp(cmd, L"restart")) {
-        int rc = command_stop();
-        if (rc != 0 && rc != 5) return rc;
-        return command_start();
-    }
-    if (!wcscmp(cmd, L"status")) return command_status();
-    if (!wcscmp(cmd, L"uninstall")) return command_uninstall();
-    if (!wcscmp(cmd, L"logs")) return command_logs();
-    if (!wcscmp(cmd, L"service-run")) return command_service_run();
-
-    /* Backward compatibility: options without `run` still start interactively. */
-    if (cmd[0] == L'-') return run_monitor(argc, argv, 1, false);
-
-    fwprintf(stderr, L"Unknown command: %ls\n\n", cmd);
-    print_usage();
-    return 2;
 }

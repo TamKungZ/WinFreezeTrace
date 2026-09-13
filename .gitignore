@@ -1,6 +1,7 @@
-/build/
-/out/
-/logs/
+build/
+out/
 *.user
 *.suo
-.vs/
+*.VC.db
+*.dmp
+reports/
