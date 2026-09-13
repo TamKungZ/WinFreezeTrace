@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(WinFreezeTrace C)
+project(WinFreezeTrace VERSION 0.3.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-add_executable(WinFreezeTrace WIN32 src/main.c)
+add_executable(WinFreezeTrace WIN32 src/main.c src/version.rc)
 target_compile_definitions(WinFreezeTrace PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601)
 target_link_libraries(WinFreezeTrace PRIVATE user32 psapi pdh wevtapi advapi32 dbghelp shell32)
 

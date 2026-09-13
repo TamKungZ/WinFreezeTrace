@@ -1,5 +1,7 @@
 # WinFreezeTrace
 
+Current version: **0.3.0**
+
 WinFreezeTrace is a small Windows background recorder for investigating freezes and unresponsive foreground applications. It keeps a short in-memory timeline and writes a diagnostic bundle when it detects a trigger or when the user presses a hotkey.
 
 The generated summary is heuristic. It can point to evidence worth investigating, but it does not determine root cause with certainty and is not a replacement for ETW/WPR, a kernel dump, hardware diagnostics, or a debugger.
@@ -149,7 +151,27 @@ WinFreezeTrace is built as a Windows GUI executable and does not keep a console 
 WinFreezeTrace.exe --background
 ```
 
-To start it at user logon, place `WinFreezeTrace.exe` next to `install_task.cmd` and run the script. The task uses the normal user's limited privilege level. Run `uninstall_task.cmd` to remove the task.
+To install it for the current user, place `WinFreezeTrace.exe` next to `install_task.cmd` or build the Release configuration, then run:
+
+```bat
+install_task.cmd
+```
+
+The installer stops an existing WinFreezeTrace process, copies the executable to `%LOCALAPPDATA%\WinFreezeTrace\bin`, replaces the scheduled task, and starts it. The task runs at the normal user's limited privilege level and starts at logon; administrator access is not normally required.
+
+To stop the running process and remove the task and installed executable while preserving incident reports:
+
+```bat
+uninstall_task.cmd
+```
+
+To also remove reports and all remaining data under `%LOCALAPPDATA%\WinFreezeTrace`:
+
+```bat
+uninstall_task.cmd --purge
+```
+
+`--purge` is destructive and cannot be undone.
 
 Only one instance is allowed per user session.
 

@@ -24,6 +24,7 @@
 #pragma comment(lib, "shell32.lib")
 
 #define APP_NAME L"WinFreezeTrace"
+#define APP_VERSION "0.3.0"
 #define MAX_RING 600
 #define MAX_TITLE 512
 #define MAX_PATH_W 1024
@@ -878,6 +879,7 @@ static void write_summary(const WCHAR *dir, const Config *cfg, TriggerReason rea
     SYSTEM_INFO si; GetSystemInfo(&si);
 
     fputs("WinFreezeTrace incident report\r\n==============================\r\n", f);
+    fprintf(f, "Version: %s\r\n", APP_VERSION);
     fprintf(f, "Trigger: %s\r\n", trigger_name(reason));
     fprintf(f, "Time: %04u-%02u-%02u %02u:%02u:%02u.%03u local\r\n",
         trigger_sample->ts.wYear, trigger_sample->ts.wMonth, trigger_sample->ts.wDay,
