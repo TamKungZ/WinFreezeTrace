@@ -6,6 +6,8 @@ set "TASK_NAME=WinFreezeTrace"
 set "INSTALL_DIR=%LOCALAPPDATA%\WinFreezeTrace\bin"
 set "TARGET=%INSTALL_DIR%\WinFreezeTrace.exe"
 set "SOURCE=%~dp0WinFreezeTrace.exe"
+set "DLL_NAME=WinFreezeTraceCore.dll"
+set "SOURCE_DLL=%~dp0%DLL_NAME%"
 set "ME=%USERDOMAIN%\%USERNAME%"
 
 if not defined LOCALAPPDATA (
@@ -14,9 +16,15 @@ if not defined LOCALAPPDATA (
 )
 
 if not exist "%SOURCE%" set "SOURCE=%~dp0build\Release\WinFreezeTrace.exe"
+if not exist "%SOURCE_DLL%" set "SOURCE_DLL=%~dp0build\Release\%DLL_NAME%"
 if not exist "%SOURCE%" (
   echo ERROR: WinFreezeTrace.exe was not found.
   echo Place it next to this script or build the Release configuration first.
+  exit /b 1
+)
+if not exist "%SOURCE_DLL%" (
+  echo ERROR: %DLL_NAME% was not found.
+  echo It must be next to WinFreezeTrace.exe ^(the exe only loads the engine from this DLL^).
   exit /b 1
 )
 
@@ -50,6 +58,13 @@ if /I not "%SOURCE%"=="%TARGET%" (
   copy /Y "%SOURCE%" "%TARGET%" >nul
   if errorlevel 1 (
     echo ERROR: Could not copy WinFreezeTrace.exe to "%INSTALL_DIR%".
+    exit /b 1
+  )
+)
+if /I not "%SOURCE_DLL%"=="%INSTALL_DIR%\%DLL_NAME%" (
+  copy /Y "%SOURCE_DLL%" "%INSTALL_DIR%\%DLL_NAME%" >nul
+  if errorlevel 1 (
+    echo ERROR: Could not copy %DLL_NAME% to "%INSTALL_DIR%".
     exit /b 1
   )
 )
