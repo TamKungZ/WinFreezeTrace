@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build and publish, e.g. v0.4.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v(\d+)\.(\d+)\.(\d+)') { throw "Tag '$env:TAG' must look like v1.2.3" }
+          $num = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          $ver = $env:TAG.Substring(1)
+          "VERSION=$ver" >> $env:GITHUB_ENV
+          "VERSION_NUM=$num.0" >> $env:GITHUB_ENV
+          $cm = (Select-String -Path CMakeLists.txt -Pattern 'project\(WinFreezeTrace VERSION ([\d.]+)').Matches.Groups[1].Value
+          if ($cm -ne $num) { Write-Warning "Tag version $num differs from CMakeLists.txt version $cm (the exe will report $cm)." }
+
+      - name: Configure (MSVC x64)
+        shell: pwsh
+        run: |
+          $tests = if (Test-Path tests/test_core.c) { 'ON' } else { 'OFF' }
+          cmake -S . -B build -A x64 -DWFT_BUILD_TESTS="$tests"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        shell: pwsh
+        run: |
+          if (Test-Path tests/test_core.c) { ctest --test-dir build -C Release --output-on-failure }
+          else { Write-Host 'No tests/ directory, skipping.' }
+
+      - name: Ensure NSIS
+        shell: pwsh
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $nsis)) { choco install nsis -y --no-progress; }
+          if (-not (Test-Path $nsis)) { throw 'makensis.exe not found' }
+          "${env:ProgramFiles(x86)}\NSIS" >> $env:GITHUB_PATH
+
+      - name: Build NSIS installer (admin, per-machine)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $out = Join-Path $PWD "dist/WinFreezeTrace-Setup-$env:VERSION.exe"
+          makensis /V2 "/DVERSION=$env:VERSION" "/DVERSION_NUM=$env:VERSION_NUM" "/DSRCDIR=$PWD" "/DOUTFILE=$out" installer/WinFreezeTrace.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+
+      - name: Portable zip + checksums
+        shell: pwsh
+        run: |
+          $stage = "dist/stage"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item build/Release/WinFreezeTrace.exe, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-x64.zip" -Force
+          Remove-Item -Recurse -Force $stage
+          Push-Location dist
+          Get-ChildItem -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+          Pop-Location
+
+      - name: Publish release
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ($env:TAG -match '-') { $extra += '--prerelease' }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --verify-tag --title "WinFreezeTrace $env:VERSION" --generate-notes @extra
+            if ($LASTEXITCODE -ne 0) { throw 'release create failed' }
+          }
+          gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'release upload failed' }
