@@ -78,7 +78,8 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           $out = Join-Path $PWD "dist/WinFreezeTrace-Setup-$env:VERSION-${{ matrix.arch }}.exe"
           $exe = Join-Path $PWD "build/Release/WinFreezeTrace.exe"
-          makensis /V2 "/DARCH=${{ matrix.arch }}" "/DEXE=$exe" "/DVERSION=$env:VERSION" "/DVERSION_NUM=$env:VERSION_NUM" "/DSRCDIR=$PWD" "/DOUTFILE=$out" installer/WinFreezeTrace.nsi
+          $dll = Join-Path $PWD "build/Release/WinFreezeTraceCore.dll"
+          makensis /V2 "/DARCH=${{ matrix.arch }}" "/DEXE=$exe" "/DDLL=$dll" "/DVERSION=$env:VERSION" "/DVERSION_NUM=$env:VERSION_NUM" "/DSRCDIR=$PWD" "/DOUTFILE=$out" installer/WinFreezeTrace.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
 
       - name: Portable zip
@@ -86,7 +87,7 @@ jobs:
         run: |
           $stage = "stage"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item build/Release/WinFreezeTrace.exe, LICENSE, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
+          Copy-Item build/Release/WinFreezeTrace.exe, build/Release/WinFreezeTraceCore.dll, LICENSE, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-${{ matrix.arch }}.zip" -Force
 
       - name: Upload build output
