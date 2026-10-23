@@ -1,5 +1,3 @@
-; WinFreezeTrace installer (NSIS 3, Unicode). Per-machine install, requires administrator.
-; Build: makensis /DARCH=x64|x86 /DEXE=<WinFreezeTrace.exe> /DVERSION=0.4.0 /DVERSION_NUM=0.4.0.0 /DSRCDIR=<repo root> /DOUTFILE=<out.exe> WinFreezeTrace.nsi
 
 Unicode true
 !include "MUI2.nsh"
@@ -21,6 +19,9 @@ Unicode true
 !ifndef EXE
   !define EXE "${SRCDIR}\build\Release\WinFreezeTrace.exe"
 !endif
+!ifndef DLL
+  !define DLL "${SRCDIR}\build\Release\WinFreezeTraceCore.dll"
+!endif
 !ifndef OUTFILE
   !define OUTFILE "WinFreezeTrace-Setup-${VERSION}-${ARCH}.exe"
 !endif
@@ -33,7 +34,6 @@ OutFile "${OUTFILE}"
 !if "${ARCH}" == "x64"
   InstallDir "$PROGRAMFILES64\${APP}"
 !else
-  ; 32-bit installer: $PROGRAMFILES is "Program Files (x86)" on 64-bit Windows.
   InstallDir "$PROGRAMFILES\${APP}"
 !endif
 InstallDirRegKey HKLM "Software\${APP}" "InstallDir"
@@ -78,6 +78,7 @@ Section "${APP} (required)" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${EXE}"
+  File "${DLL}"
   File "${SRCDIR}\LICENSE"
   File "${SRCDIR}\README.md"
   File "${SRCDIR}\CHANGELOG.md"
@@ -85,7 +86,6 @@ Section "${APP} (required)" SecMain
   File "${SRCDIR}\uninstall_task.cmd"
   File "${SRCDIR}\register_task.ps1"
 
-  ; Helper used by the PATH section and the uninstaller.
   File "${SRCDIR}\installer\path.ps1"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -110,7 +110,6 @@ Section "Add to system PATH (run `WinFreezeTrace` from any terminal)" SecPath
     DetailPrint "Could not update PATH (exit code $0)."
   ${Else}
     WriteRegDWORD HKLM "Software\${APP}" "PathAdded" 1
-    ; Tell running programs the environment changed.
     System::Call 'user32::SendMessageTimeoutW(i 0xffff, i 0x1A, i 0, w "Environment", i 2, i 5000, *i .r0)'
   ${EndIf}
 SectionEnd
@@ -122,7 +121,7 @@ Section "Start Menu shortcuts" SecShortcuts
   CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-LangString DESC_Main ${LANG_ENGLISH} "The recorder, documentation and the optional logon-task scripts."
+LangString DESC_Main ${LANG_ENGLISH} "The recorder (WinFreezeTrace.exe + WinFreezeTraceCore.dll), documentation and the optional logon-task scripts."
 LangString DESC_Path ${LANG_ENGLISH} "Adds the install folder to the machine PATH so WinFreezeTrace can be called by name."
 LangString DESC_SM ${LANG_ENGLISH} "Start Menu entries for all users."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
@@ -134,7 +133,6 @@ LangString DESC_SM ${LANG_ENGLISH} "Start Menu entries for all users."
 Section "Uninstall"
   SetShellVarContext all
 
-  ; Remove the logon task if the user created it with install_task.cmd (current user only).
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APP}"'
   Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /F /TN "${APP}"'
@@ -148,6 +146,7 @@ Section "Uninstall"
   ${EndIf}
 
   Delete /REBOOTOK "$INSTDIR\WinFreezeTrace.exe"
+  Delete /REBOOTOK "$INSTDIR\WinFreezeTraceCore.dll"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\CHANGELOG.md"
@@ -164,5 +163,4 @@ Section "Uninstall"
 
   DeleteRegKey HKLM "${UNINST_KEY}"
   DeleteRegKey HKLM "Software\${APP}"
-  ; Reports/logs in %LOCALAPPDATA%\WinFreezeTrace are user data and are intentionally kept.
 SectionEnd
