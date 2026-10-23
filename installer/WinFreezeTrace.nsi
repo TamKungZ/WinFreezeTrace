@@ -1,5 +1,5 @@
 ; WinFreezeTrace installer (NSIS 3, Unicode). Per-machine install, requires administrator.
-; Build: makensis /DVERSION=0.4.0 /DVERSION_NUM=0.4.0.0 /DSRCDIR=<repo root> /DOUTFILE=<out.exe> WinFreezeTrace.nsi
+; Build: makensis /DARCH=x64|x86 /DEXE=<WinFreezeTrace.exe> /DVERSION=0.4.0 /DVERSION_NUM=0.4.0.0 /DSRCDIR=<repo root> /DOUTFILE=<out.exe> WinFreezeTrace.nsi
 
 Unicode true
 !include "MUI2.nsh"
@@ -15,16 +15,27 @@ Unicode true
 !ifndef SRCDIR
   !define SRCDIR ".."
 !endif
+!ifndef ARCH
+  !define ARCH "x64"
+!endif
+!ifndef EXE
+  !define EXE "${SRCDIR}\build\Release\WinFreezeTrace.exe"
+!endif
 !ifndef OUTFILE
-  !define OUTFILE "WinFreezeTrace-Setup-${VERSION}.exe"
+  !define OUTFILE "WinFreezeTrace-Setup-${VERSION}-${ARCH}.exe"
 !endif
 
 !define APP "WinFreezeTrace"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
 
-Name "${APP} ${VERSION}"
+Name "${APP} ${VERSION} (${ARCH})"
 OutFile "${OUTFILE}"
-InstallDir "$PROGRAMFILES64\${APP}"
+!if "${ARCH}" == "x64"
+  InstallDir "$PROGRAMFILES64\${APP}"
+!else
+  ; 32-bit installer: $PROGRAMFILES is "Program Files (x86)" on 64-bit Windows.
+  InstallDir "$PROGRAMFILES\${APP}"
+!endif
 InstallDirRegKey HKLM "Software\${APP}" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
@@ -48,21 +59,25 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !insertmacro MUI_LANGUAGE "English"
 
 Function .onInit
+!if "${ARCH}" == "x64"
   ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "${APP} requires 64-bit Windows."
+    MessageBox MB_ICONSTOP "This is the 64-bit build of ${APP}. Use the x86 installer on 32-bit Windows."
     Abort
   ${EndIf}
   SetRegView 64
+!endif
 FunctionEnd
 
 Function un.onInit
+!if "${ARCH}" == "x64"
   SetRegView 64
+!endif
 FunctionEnd
 
 Section "${APP} (required)" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File "${SRCDIR}\build\Release\WinFreezeTrace.exe"
+  File "${EXE}"
   File "${SRCDIR}\LICENSE"
   File "${SRCDIR}\README.md"
   File "${SRCDIR}\CHANGELOG.md"
