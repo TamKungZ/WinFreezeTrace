@@ -6,6 +6,7 @@ set "APP_ROOT=%LOCALAPPDATA%\WinFreezeTrace"
 set "INSTALL_DIR=%APP_ROOT%\bin"
 set "TARGET=%INSTALL_DIR%\WinFreezeTrace.exe"
 set "FAILED=0"
+set "ME=%USERDOMAIN%\%USERNAME%"
 
 if not defined LOCALAPPDATA (
   echo ERROR: LOCALAPPDATA is not available for this user.
@@ -14,10 +15,10 @@ if not defined LOCALAPPDATA (
 
 echo Stopping WinFreezeTrace...
 schtasks.exe /End /TN "%TASK_NAME%" >nul 2>nul
-taskkill.exe /F /IM WinFreezeTrace.exe >nul 2>nul
+taskkill.exe /F /FI "USERNAME eq %ME%" /IM WinFreezeTrace.exe >nul 2>nul
 timeout.exe /T 1 /NOBREAK >nul
 
-tasklist.exe /FI "IMAGENAME eq WinFreezeTrace.exe" /NH 2>nul | findstr.exe /I /C:"WinFreezeTrace.exe" >nul
+tasklist.exe /FI "IMAGENAME eq WinFreezeTrace.exe" /FI "USERNAME eq %ME%" /NH 2>nul | findstr.exe /I /C:"WinFreezeTrace.exe" >nul
 if not errorlevel 1 (
   echo ERROR: WinFreezeTrace.exe is still running. Rerun with sufficient permission.
   set "FAILED=1"

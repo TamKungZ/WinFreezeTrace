@@ -1,0 +1,31 @@
+/* platform.h - process hardening, time, files, private directories, logging. */
+#ifndef WFT_PLATFORM_H
+#define WFT_PLATFORM_H
+#include "winenv.h"
+
+void   plat_init(void);                       /* QPC frequency */
+void   plat_harden_process(void);             /* DLL search path, heap corruption, error mode */
+double plat_qpc_ms(void);
+void   plat_local_time(WftTime *t);
+DWORD  plat_self_pid(void);
+
+typedef enum DirResult { DIR_CREATED, DIR_EXISTS, DIR_FAILED } DirResult;
+/* Create a directory readable only by the current user and SYSTEM (protected DACL). */
+DirResult plat_create_private_dir(const WCHAR *path);
+/* Creates "<local appdata>\WinFreezeTrace" (+ \reports) and returns both paths. */
+void   plat_default_paths(WCHAR *app_root, size_t app_cch, WCHAR *reports, size_t rep_cch);
+bool   plat_abs_path(const WCHAR *in, WCHAR *out, size_t cch);
+bool   plat_free_mb(const WCHAR *path, uint64_t *mb);
+FILE  *plat_fopen_w(const WCHAR *path);       /* binary write, NULL on failure */
+bool   plat_pid_exe(DWORD pid, WCHAR *out, size_t cch);   /* full image path, limited rights */
+
+/* Console output for --help/--version/errors when launched from a terminal. */
+void   plat_print(const char *text);
+
+/* Tiny size-capped log in the app folder. Never blocks capture on failure. */
+void   log_init(const WCHAR *dir);
+void   log_msg(const char *level, const char *fmt, ...);
+/* fmt contains exactly one %s that receives the wide string (converted to UTF-8; never use %ls with log_msg). */
+void   log_msg_w(const char *level, const char *fmt, const WCHAR *w);
+
+#endif

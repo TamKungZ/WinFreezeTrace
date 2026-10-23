@@ -5,3 +5,7 @@ out/
 *.VC.db
 *.dmp
 reports/
+*.exe
+*.obj
+*.pdb
+tests/test_core
