@@ -38,6 +38,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "${SRCDIR}\LICENSE"
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -62,6 +63,7 @@ Section "${APP} (required)" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${SRCDIR}\build\Release\WinFreezeTrace.exe"
+  File "${SRCDIR}\LICENSE"
   File "${SRCDIR}\README.md"
   File "${SRCDIR}\CHANGELOG.md"
   File "${SRCDIR}\install_task.cmd"
@@ -131,6 +133,7 @@ Section "Uninstall"
   ${EndIf}
 
   Delete /REBOOTOK "$INSTDIR\WinFreezeTrace.exe"
+  Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\CHANGELOG.md"
   Delete "$INSTDIR\install_task.cmd"
