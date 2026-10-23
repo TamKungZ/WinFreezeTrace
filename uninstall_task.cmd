@@ -39,6 +39,12 @@ if exist "%TARGET%" (
   set "FAILED=1"
 )
 
+if exist "%INSTALL_DIR%\WinFreezeTraceCore.dll" del /F /Q "%INSTALL_DIR%\WinFreezeTraceCore.dll" >nul 2>nul
+if exist "%INSTALL_DIR%\WinFreezeTraceCore.dll" (
+  echo ERROR: Could not remove "%INSTALL_DIR%\WinFreezeTraceCore.dll".
+  set "FAILED=1"
+)
+
 if exist "%INSTALL_DIR%" rd "%INSTALL_DIR%" >nul 2>nul
 
 if /I "%~1"=="--purge" (
