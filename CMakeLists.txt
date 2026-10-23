@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 project(WinFreezeTrace VERSION 0.4.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
@@ -31,10 +33,10 @@ if(WFT_BUILD_TESTS)
   add_test(NAME core COMMAND wft_tests)
 endif()
 
-# ---- The Windows application ----
+# ---- The Windows application: thin exe + core DLL ----
 if(WIN32)
-  add_executable(WinFreezeTrace WIN32
-    src/main.c
+  add_library(WinFreezeTraceCore SHARED
+    src/engine.c
     src/win/platform.c
     src/win/metrics.c
     src/win/foreground.c
@@ -46,16 +48,30 @@ if(WIN32)
     src/win/sysinfo.c
     src/win/report.c
     src/version.rc)
-  target_include_directories(WinFreezeTrace PRIVATE src src/core)
+  set_target_properties(WinFreezeTraceCore PROPERTIES PREFIX "")
+  target_include_directories(WinFreezeTraceCore PRIVATE src src/core)
+  target_compile_definitions(WinFreezeTraceCore PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601 WFT_BUILDING_DLL WFT_RC_DLL)
+  target_link_libraries(WinFreezeTraceCore PRIVATE wft_core user32 psapi pdh wevtapi advapi32 dbghelp shell32 powrprof version)
+
+  add_executable(WinFreezeTrace WIN32 src/launcher.c src/version.rc)
   target_compile_definitions(WinFreezeTrace PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601)
-  target_link_libraries(WinFreezeTrace PRIVATE wft_core user32 psapi pdh wevtapi advapi32 dbghelp shell32 powrprof version)
+  target_link_libraries(WinFreezeTrace PRIVATE user32)
 
   if(MSVC)
-    target_compile_options(WinFreezeTrace PRIVATE /W4 /O2 /guard:cf /GS)
-    target_link_options(WinFreezeTrace PRIVATE /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /DEPENDENTLOADFLAG:0x800)
+    foreach(t WinFreezeTraceCore WinFreezeTrace)
+      target_compile_options(${t} PRIVATE /W4 /O2 /guard:cf /GS)
+      target_link_options(${t} PRIVATE /DYNAMICBASE /NXCOMPAT /DEPENDENTLOADFLAG:0x800)
+    endforeach()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+      target_link_options(WinFreezeTraceCore PRIVATE /HIGHENTROPYVA)
+      target_link_options(WinFreezeTrace PRIVATE /HIGHENTROPYVA)
+    endif()
+    target_compile_definitions(WinFreezeTrace PRIVATE _CRT_SECURE_NO_WARNINGS)
   else()
-    # MinGW-w64: wWinMain needs -municode.
-    target_compile_options(WinFreezeTrace PRIVATE -Wall -Wextra -O2)
-    target_link_options(WinFreezeTrace PRIVATE -municode -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va)
+    foreach(t WinFreezeTraceCore WinFreezeTrace)
+      target_compile_options(${t} PRIVATE -Wall -Wextra -O2)
+      target_link_options(${t} PRIVATE -static -static-libgcc -Wl,--dynamicbase -Wl,--nxcompat)
+    endforeach()
+    target_link_options(WinFreezeTrace PRIVATE -municode)
   endif()
 endif()
