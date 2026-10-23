@@ -1,6 +1,11 @@
 #include "sysinfo.h"
 #include "metrics.h"
 
+typedef struct WftProcPowerInfo {
+    ULONG Number, MaxMhz, CurrentMhz, MhzLimit, MaxIdleState, CurrentIdleState;
+} WftProcPowerInfo;
+
+
 static FILE *open_in(const WCHAR *dir, const WCHAR *name) {
     WCHAR p[WFT_PATH_CCH]; wft_wsnprintf(p, WFT_PATH_CCH, L"%ls\\%ls", dir, name);
     return plat_fopen_w(p);
@@ -262,7 +267,7 @@ void sysinfo_write_power(const WCHAR *dir, PowerFacts *pf) {
     }
     SYSTEM_INFO si; GetSystemInfo(&si);
     DWORD ncpu = si.dwNumberOfProcessors ? si.dwNumberOfProcessors : 1; if (ncpu > 256) ncpu = 256;
-    PROCESSOR_POWER_INFORMATION *ppi = (PROCESSOR_POWER_INFORMATION *)calloc(ncpu, sizeof *ppi);
+    WftProcPowerInfo *ppi = (WftProcPowerInfo *)calloc(ncpu, sizeof *ppi);
     if (ppi && CallNtPowerInformation(ProcessorInformation, NULL, 0, ppi, ncpu * (ULONG)sizeof *ppi) == 0) {
         fputs("\r\nPer-CPU frequency (MHz). MhzLimit below MaxMhz means the CPU is being capped (power plan, thermal, firmware).\r\ncpu,max_mhz,current_mhz,limit_mhz\r\n", f);
         for (DWORD i = 0; i < ncpu; ++i) fprintf(f, "%lu,%lu,%lu,%lu\r\n", (unsigned long)ppi[i].Number, (unsigned long)ppi[i].MaxMhz, (unsigned long)ppi[i].CurrentMhz, (unsigned long)ppi[i].MhzLimit);
