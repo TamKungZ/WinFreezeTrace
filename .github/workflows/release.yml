@@ -12,18 +12,27 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  release:
+  build:
+    name: Build ${{ matrix.arch }}
     runs-on: windows-latest
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+          - arch: x86
+            cmake_arch: Win32
     steps:
       - name: Checkout tag
         uses: actions/checkout@v4
@@ -35,17 +44,16 @@ jobs:
         run: |
           if ($env:TAG -notmatch '^v(\d+)\.(\d+)\.(\d+)') { throw "Tag '$env:TAG' must look like v1.2.3" }
           $num = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
-          $ver = $env:TAG.Substring(1)
-          "VERSION=$ver" >> $env:GITHUB_ENV
+          "VERSION=$($env:TAG.Substring(1))" >> $env:GITHUB_ENV
           "VERSION_NUM=$num.0" >> $env:GITHUB_ENV
           $cm = (Select-String -Path CMakeLists.txt -Pattern 'project\(WinFreezeTrace VERSION ([\d.]+)').Matches.Groups[1].Value
           if ($cm -ne $num) { Write-Warning "Tag version $num differs from CMakeLists.txt version $cm (the exe will report $cm)." }
 
-      - name: Configure (MSVC x64)
+      - name: Configure (MSVC ${{ matrix.arch }})
         shell: pwsh
         run: |
           $tests = if (Test-Path tests/test_core.c) { 'ON' } else { 'OFF' }
-          cmake -S . -B build -A x64 -DWFT_BUILD_TESTS="$tests"
+          cmake -S . -B build -A ${{ matrix.cmake_arch }} -DWFT_BUILD_TESTS="$tests"
 
       - name: Build
         run: cmake --build build --config Release
@@ -59,41 +67,71 @@ jobs:
       - name: Ensure NSIS
         shell: pwsh
         run: |
-          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $nsis)) { choco install nsis -y --no-progress; }
-          if (-not (Test-Path $nsis)) { throw 'makensis.exe not found' }
-          "${env:ProgramFiles(x86)}\NSIS" >> $env:GITHUB_PATH
+          $dir = "${env:ProgramFiles(x86)}\NSIS"
+          if (-not (Test-Path "$dir\makensis.exe")) { choco install nsis -y --no-progress }
+          if (-not (Test-Path "$dir\makensis.exe")) { throw 'makensis.exe not found' }
+          $dir >> $env:GITHUB_PATH
 
       - name: Build NSIS installer (admin, per-machine)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          $out = Join-Path $PWD "dist/WinFreezeTrace-Setup-$env:VERSION.exe"
-          makensis /V2 "/DVERSION=$env:VERSION" "/DVERSION_NUM=$env:VERSION_NUM" "/DSRCDIR=$PWD" "/DOUTFILE=$out" installer/WinFreezeTrace.nsi
+          $out = Join-Path $PWD "dist/WinFreezeTrace-Setup-$env:VERSION-${{ matrix.arch }}.exe"
+          $exe = Join-Path $PWD "build/Release/WinFreezeTrace.exe"
+          makensis /V2 "/DARCH=${{ matrix.arch }}" "/DEXE=$exe" "/DVERSION=$env:VERSION" "/DVERSION_NUM=$env:VERSION_NUM" "/DSRCDIR=$PWD" "/DOUTFILE=$out" installer/WinFreezeTrace.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
 
-      - name: Portable zip + checksums
+      - name: Portable zip
         shell: pwsh
         run: |
-          $stage = "dist/stage"
+          $stage = "stage"
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item build/Release/WinFreezeTrace.exe, LICENSE, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
-          Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-x64.zip" -Force
-          Remove-Item -Recurse -Force $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-${{ matrix.arch }}.zip" -Force
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        shell: pwsh
+        run: |
           Push-Location dist
-          Get-ChildItem -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+          Get-ChildItem -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object Name | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content -Encoding ascii SHA256SUMS.txt
           Pop-Location
+          Get-ChildItem dist | Format-Table Name, Length
 
       - name: Publish release
         shell: pwsh
         run: |
+          $ver = $env:TAG.Substring(1)
           $extra = @()
           if ($env:TAG -match '-') { $extra += '--prerelease' }
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG --verify-tag --title "WinFreezeTrace $env:VERSION" --generate-notes @extra
+            gh release create $env:TAG --verify-tag --title "WinFreezeTrace $ver" --generate-notes @extra
             if ($LASTEXITCODE -ne 0) { throw 'release create failed' }
           }
           gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
