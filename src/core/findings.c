@@ -85,7 +85,7 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
     const EventSummary *E = &in->ev;
     uint32_t cpus = in->logical_cpus ? in->logical_cpus : 1;
 
-    /* ---- direct evidence of where the wait was ---- */
+    /* direct evidence of where the wait was */
     if (in->wait_cycle)
         add(r, CONF_HIGH, "wait_cycle", "Deadlock: circular wait chain in the foreground process",
             "Open waitchains.txt, find the thread marked cycle=YES, and load target.dmp in WinDbg (!analyze -v, ~*k) with symbols.",
@@ -97,7 +97,7 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
                                  : "Inspect the owner thread in waitchains.txt/threads.csv; a debugger on target.dmp shows its stack.",
             "UI thread chain: %s", in->ui_blocker);
 
-    /* ---- Event Log correlation (near = within 3 minutes of the trigger) ---- */
+    /* Event Log correlation (near = within 3 minutes of the trigger) */
     event_rule(r, E, EVC_WHEA_UNCORRECTED, CONF_HIGH, CONF_MED, "whea_fatal",
         "Uncorrected hardware error (WHEA) near the incident", "Uncorrected hardware error (WHEA) earlier in the last 30 minutes",
         "Check CPU/RAM/PCIe/GPU/storage health, firmware and cooling. Run vendor diagnostics; consider reverting overclocks.");
@@ -136,7 +136,7 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
             in->reason == TRIGGER_SCHEDULER_STALL ? "A scheduler stall right after resume is usually an artefact of the transition, not a freeze." : "Resume transitions can make apps briefly unresponsive.",
             "Sleep/resume notifications were seen within the last minutes (events: %d near).", E->cat[EVC_SLEEP_RESUME].near_count);
 
-    /* ---- metric correlation over the lead-in window ---- */
+    /* metric correlation over the lead-in window */
     double commit = LMAX(MI_COMMIT_PCT), load = LMAX(MI_MEM_LOAD), avail = LMIN(MI_AVAIL_MB);
     if ((WFT_HAS(commit) && commit >= 95.0) || (WFT_HAS(load) && load >= 97.0) || (WFT_HAS(avail) && avail < 300.0)) {
         peak(p1, sizeof p1, r, MI_COMMIT_PCT); peak(p2, sizeof p2, r, MI_MEM_LOAD); peak(p3, sizeof p3, r, MI_AVAIL_MB);
@@ -204,7 +204,7 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
         add(r, CONF_LOW, "nonpaged_pool", "Nonpaged pool is unusually large", "A driver may be leaking; compare against loaded_drivers.csv and use poolmon.", "nonpaged pool %s.", p1);
     }
 
-    /* ---- trigger-specific interpretation ---- */
+    /* trigger-specific interpretation */
     if (in->reason == TRIGGER_APP_HANG && WFT_HAS(LMAX(MI_WAKE_LATE)) && LMAX(MI_WAKE_LATE) < (double)in->stall_ms)
         add(r, CONF_MED, "app_specific_hang", "Only the foreground app stopped responding; the watchdog kept scheduling normally",
             "This favours an application-specific wait/deadlock over a system-wide freeze. Start with waitchains.txt and target.dmp.",

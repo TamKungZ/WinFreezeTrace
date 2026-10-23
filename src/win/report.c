@@ -8,7 +8,7 @@
 #include "sysinfo.h"
 #include "threadinfo.h"
 
-/* ------------------------------------------------------------------ capture bookkeeping */
+/* capture bookkeeping */
 
 typedef struct Cap {
     const Config *cfg;
@@ -32,7 +32,7 @@ static void warn(Cap *c, const char *fmt, ...) {
     ++c->nw;
 }
 
-/* ------------------------------------------------------------------ retention (file-system half) */
+/* retention (file-system half) */
 
 static bool scan_incident_dir(const WCHAR *dir, bool do_delete) {
     WCHAR pat[WFT_PATH_CCH]; wft_wsnprintf(pat, WFT_PATH_CCH, L"%ls\\*", dir);
@@ -80,7 +80,7 @@ out:
     free(names); free(ptrs); free(del);
 }
 
-/* ------------------------------------------------------------------ incident folder + timeline */
+/* incident folder + timeline */
 
 static bool make_incident_dir(const Config *cfg, const WftTime *t, TriggerReason why, WCHAR *out, size_t cch) {
     plat_create_private_dir(cfg->report_root);
@@ -136,7 +136,7 @@ static bool write_timeline(Cap *c, const Sample *s, int n) {
     return fclose(f) == 0 && ok;
 }
 
-/* ------------------------------------------------------------------ summary */
+/* summary */
 
 typedef struct Outcome {
     const Sample *trig; const ForegroundInfo *fg; TriggerReason reason;
@@ -244,7 +244,7 @@ static void write_summary_json(Cap *c, const Outcome *o) {
     fclose(f);
 }
 
-/* ------------------------------------------------------------------ the capture itself */
+/* the capture itself */
 
 bool capture_run(const Config *cfg, TriggerReason reason, const Sample *s, int n, const ForegroundInfo *fg,
                  bool resumed_recently, WCHAR *out_dir, size_t out_cch) {

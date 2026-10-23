@@ -64,7 +64,7 @@ typedef struct Metrics {
     double mem_load, avail_mb, commit_avail_mb;
     /* System */
     double proc_queue, system_handles, system_threads, system_processes;
-    /* --- non-double members must stay below this line --- */
+    /* non-double members must stay below this line */
     char core_cpu_name[16], core_dpc_name[16], disk_worst_name[32];
 } Metrics;
 

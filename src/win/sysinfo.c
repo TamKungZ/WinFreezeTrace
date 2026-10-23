@@ -33,7 +33,7 @@ static const char *arch_name(WORD a) {
     }
 }
 
-/* ---------------- system_info.txt ---------------- */
+/* system_info.txt */
 void sysinfo_write_system(const WCHAR *dir, const Config *cfg) {
     FILE *f = open_in(dir, L"system_info.txt"); if (!f) return;
     fputs("System snapshot\r\n===============\r\n", f);
@@ -74,7 +74,7 @@ void sysinfo_write_system(const WCHAR *dir, const Config *cfg) {
     fclose(f);
 }
 
-/* ---------------- drives.csv ---------------- */
+/* drives.csv */
 void sysinfo_write_drives(const WCHAR *dir, DriveFacts *df) {
     df->lowest_free_pct = df->lowest_free_gb = WFT_NA; df->lowest_drive[0] = 0;
     FILE *f = open_in(dir, L"drives.csv"); if (!f) return;
@@ -105,7 +105,7 @@ void sysinfo_write_drives(const WCHAR *dir, DriveFacts *df) {
     fclose(f);
 }
 
-/* ---------------- loaded_drivers.csv ---------------- */
+/* loaded_drivers.csv */
 static void driver_path(const WCHAR *raw, WCHAR *out, size_t cch) {
     if (wft_wcs_istarts(raw, L"\\SystemRoot\\")) {
         WCHAR win[MAX_PATH]; UINT n = GetWindowsDirectoryW(win, MAX_PATH);
@@ -165,7 +165,7 @@ void sysinfo_write_drivers(const WCHAR *dir, const Config *cfg) {
     fclose(f);
 }
 
-/* ---------------- storage_devices.csv ---------------- */
+/* storage_devices.csv */
 static const char *bus_name(unsigned t) {
     static const char *const n[] = { "Unknown", "SCSI", "ATAPI", "ATA", "1394", "SSA", "FibreChannel", "USB", "RAID", "iSCSI", "SAS", "SATA", "SD", "MMC", "Virtual", "FileBackedVirtual", "StorageSpaces", "NVMe" };
     return t < sizeof n / sizeof n[0] ? n[t] : "Other";
@@ -213,7 +213,7 @@ void sysinfo_write_storage(const WCHAR *dir, const Config *cfg) {
     fclose(f);
 }
 
-/* ---------------- displays.csv + display_drivers.csv ---------------- */
+/* displays.csv + display_drivers.csv */
 void sysinfo_write_displays(const WCHAR *dir, const Config *cfg) {
     FILE *f = open_in(dir, L"displays.csv");
     if (f) {
@@ -254,7 +254,7 @@ void sysinfo_write_displays(const WCHAR *dir, const Config *cfg) {
     fclose(f);
 }
 
-/* ---------------- power.txt ---------------- */
+/* power.txt */
 void sysinfo_write_power(const WCHAR *dir, PowerFacts *pf) {
     pf->max_temp_c = pf->min_passive_pct = WFT_NA;
     FILE *f = open_in(dir, L"power.txt"); if (!f) return;

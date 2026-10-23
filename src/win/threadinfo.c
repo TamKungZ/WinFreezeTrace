@@ -77,7 +77,7 @@ int threads_finish_write(const WCHAR *dir, DWORD pid, DWORD gui_tid, const Threa
     return nt;
 }
 
-/* ---- wait chains ---- */
+/* wait chains */
 
 static const char *wct_type_name(WCT_OBJECT_TYPE t) {
     switch (t) {
