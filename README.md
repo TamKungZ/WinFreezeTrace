@@ -19,7 +19,7 @@ For lower capture impact and no process dump:
 WinFreezeTrace.exe --interval 2000 --no-dump
 ```
 
-To run at logon, execute `install_task.cmd`. Use `uninstall_task.cmd` to remove the task and executable, or `uninstall_task.cmd --purge` to delete reports and logs too.
+To run at logon, execute `install_task.cmd`. Use `uninstall_task.cmd` to remove the task, executable and DLL, or `uninstall_task.cmd --purge` to delete reports and logs too.
 
 ## Capture triggers
 
