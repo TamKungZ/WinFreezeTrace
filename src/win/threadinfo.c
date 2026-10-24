@@ -2,6 +2,20 @@
 
 #define MAX_THREADS 2048
 
+/* Wait Chain Traversal constants that MinGW-w64's wct.h does not declare (the Windows SDK does). */
+#ifndef WCT_MAX_NODE_COUNT
+#define WCT_MAX_NODE_COUNT 16
+#endif
+#ifndef WCT_OUT_OF_PROC_FLAG
+#define WCT_OUT_OF_PROC_FLAG      0x1
+#define WCT_OUT_OF_PROC_COM_FLAG  0x2
+#define WCT_OUT_OF_PROC_CS_FLAG   0x4
+#define WCT_NETWORK_IO_FLAG       0x8
+#endif
+#ifndef WCTP_GETINFO_ALL_FLAGS
+#define WCTP_GETINFO_ALL_FLAGS (WCT_OUT_OF_PROC_FLAG | WCT_OUT_OF_PROC_COM_FLAG | WCT_OUT_OF_PROC_CS_FLAG | WCT_NETWORK_IO_FLAG)
+#endif
+
 typedef HRESULT (WINAPI *GetThreadDescription_t)(HANDLE, PWSTR *);
 static ULONGLONG ft64(FILETIME f) { ULARGE_INTEGER u; u.LowPart = f.dwLowDateTime; u.HighPart = f.dwHighDateTime; return u.QuadPart; }
 
@@ -80,7 +94,7 @@ int threads_finish_write(const WCHAR *dir, DWORD pid, DWORD gui_tid, const Threa
 /* wait chains */
 
 static const char *wct_type_name(WCT_OBJECT_TYPE t) {
-    switch (t) {
+    switch ((int)t) {
         case WctCriticalSectionType: return "CriticalSection";
         case WctSendMessageType: return "SendMessage";
         case WctMutexType: return "Mutex";
@@ -90,8 +104,8 @@ static const char *wct_type_name(WCT_OBJECT_TYPE t) {
         case WctProcessWaitType: return "ProcessWait";
         case WctThreadType: return "Thread";
         case WctComActivationType: return "COMActivation";
-        case WctSocketIoType: return "SocketIO";
-        case WctSmbIoType: return "SMBIO";
+        case 11: return "SocketIO";     /* WctSocketIoType: absent from MinGW headers */
+        case 12: return "SMBIO";         /* WctSmbIoType */
         default: return "Unknown";
     }
 }
@@ -186,12 +200,17 @@ void modules_write(const WCHAR *dir, DWORD pid, const Config *cfg) {
     WCHAR path[WFT_PATH_CCH]; wft_wsnprintf(path, WFT_PATH_CCH, L"%ls\\modules.csv", dir);
     FILE *f = plat_fopen_w(path); if (!f) return;
     fputs("base,size,module,path\r\n", f);
-    HANDLE snap = pid ? CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) : INVALID_HANDLE_VALUE;
+    HANDLE snap = INVALID_HANDLE_VALUE;
+    for (int tries = 0; pid && tries < 5; ++tries) {              /* documented: fails with ERROR_BAD_LENGTH while modules are loading */
+        snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+        if (snap != INVALID_HANDLE_VALUE || GetLastError() != ERROR_BAD_LENGTH) break;
+        Sleep(20);
+    }
     if (snap != INVALID_HANDLE_VALUE) {
         MODULEENTRY32W me; memset(&me, 0, sizeof me); me.dwSize = sizeof me;
         if (Module32FirstW(snap, &me)) {
             do {
-                fprintf(f, "0x%p,%lu,", (void *)me.modBaseAddr, (unsigned long)me.modBaseSize);
+                fprintf(f, "0x%llx,%lu,", (unsigned long long)(ULONG_PTR)me.modBaseAddr, (unsigned long)me.modBaseSize);
                 wft_csv_text(f, me.szModule); fputc(',', f);
                 WCHAR p[MAX_PATH + 8]; wft_wsnprintf(p, MAX_PATH + 8, L"%ls", me.szExePath);
                 if (cfg->redact) wft_redact_user_path(p, MAX_PATH + 8);
