@@ -250,6 +250,8 @@ bool capture_run(const Config *cfg, TriggerReason reason, const Sample *s, int n
                  bool resumed_recently, WCHAR *out_dir, size_t out_cch) {
     if (n <= 0) return false;
     double t_start = plat_qpc_ms();
+    FILETIME trig_now; GetSystemTimeAsFileTime(&trig_now);       /* event ages are relative to this, not to the end of the minidump */
+    ULONGLONG trigger_ft = ((ULONGLONG)trig_now.dwHighDateTime << 32) | trig_now.dwLowDateTime;
     static Cap c;                                   /* single-threaded; keeps ~5 KB off the stack */
     memset(&c, 0, sizeof c);
     c.cfg = cfg;
@@ -292,11 +294,12 @@ bool capture_run(const Config *cfg, TriggerReason reason, const Sample *s, int n
     step_begin(&c, "threads");    o.nhot = threads_finish_write(c.dir, fg->pid, fg->tid, &ts, o.hot, 5); if (ts.truncated) warn(&c, "thread list truncated"); step_end(&c);
     step_begin(&c, "modules");    modules_write(c.dir, fg->pid, cfg); step_end(&c);
     step_begin(&c, "minidump");   o.dump = dump_write(c.dir, fg->pid, fg->path, cfg, &o.dump_err, &o.dump_ms); step_end(&c);
-    step_begin(&c, "events");     events_capture(c.dir, cfg, ev); step_end(&c);
+    step_begin(&c, "events");     events_capture(c.dir, cfg, trigger_ft, ev); step_end(&c);
     DriveFacts df; PowerFacts pf;
     step_begin(&c, "system");     sysinfo_write_system(c.dir, cfg); sysinfo_write_drives(c.dir, &df); sysinfo_write_power(c.dir, &pf); step_end(&c);
     step_begin(&c, "drivers");    sysinfo_write_drivers(c.dir, cfg); step_end(&c);
     step_begin(&c, "hardware");   sysinfo_write_storage(c.dir, cfg); sysinfo_write_displays(c.dir, cfg); step_end(&c);
+    step_begin(&c, "startup");    sysinfo_write_startup(c.dir, cfg); step_end(&c);
 
     SYSTEM_INFO si; GetSystemInfo(&si);
     in->reason = reason; in->s = s; in->n = n; in->stall_ms = cfg->stall_ms; in->logical_cpus = si.dwNumberOfProcessors; in->lead_seconds = cfg->lead_seconds;
