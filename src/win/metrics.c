@@ -57,7 +57,7 @@ static bool read_array(ArrayCounter *a, double scale, bool want_max, double *out
     if (!a->h) return false;
     DWORD bytes = a->cap, count = 0;
     PDH_STATUS st = PdhGetFormattedCounterArrayW(a->h, PDH_FMT_DOUBLE, &bytes, &count, (PDH_FMT_COUNTERVALUE_ITEM_W *)a->buf);
-    if (st == PDH_MORE_DATA && bytes > a->cap && bytes <= (1u << 20)) {
+    if (st == (PDH_STATUS)PDH_MORE_DATA && bytes > a->cap && bytes <= (1u << 20)) {
         BYTE *nb = (BYTE *)realloc(a->buf, bytes);
         if (!nb) return false;
         a->buf = nb; a->cap = bytes;
