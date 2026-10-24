@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: url(#linear-gradient-2);
+      }
+
+      .cls-2 {
+        fill: #fff;
+      }
+
+      .cls-3 {
+        fill: rgba(255, 255, 255, .55);
+      }
+
+      .cls-4 {
+        fill: #a4ecff;
+      }
+
+      .cls-5 {
+        fill: url(#linear-gradient-3);
+      }
+
+      .cls-6 {
+        fill: url(#linear-gradient);
+      }
+    </style>
+    <linearGradient id="linear-gradient" x1="5.07" y1="256" x2="506.93" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f5f8fd"/>
+      <stop offset="1" stop-color="#f1fafe"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-2" x1="113.96" y1="-22.08" x2="398.04" y2="262.01" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b79de"/>
+      <stop offset="1" stop-color="#83b0ef"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="60.27" y1="321.24" x2="391.5" y2="321.24" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2b79de"/>
+      <stop offset="1" stop-color="#a4ecff"/>
+    </linearGradient>
+  </defs>
+  <rect class="cls-6" x="5.07" y="42.71" width="501.86" height="426.58" rx="75.28" ry="75.28"/>
+  <path class="cls-1" d="M5.07,117.99c0-41.58,33.7-75.28,75.28-75.28h351.3c41.58,0,75.28,33.7,75.28,75.28v35.13H5.07v-35.13Z"/>
+  <circle class="cls-2" cx="70.31" cy="97.91" r="15.06"/>
+  <circle class="cls-3" cx="120.5" cy="97.91" r="15.06"/>
+  <path class="cls-5" d="M271.06,434.16c-.37,0-.73-.01-1.1-.04-6.19-.45-11.47-4.66-13.29-10.59l-48.86-158.78-33.57,70.5c-2.5,5.24-7.79,8.58-13.59,8.58h-85.32c-8.31,0-15.06-6.74-15.06-15.06s6.74-15.06,15.06-15.06h75.81l46.1-96.81c2.67-5.6,8.52-8.98,14.69-8.54,6.19.45,11.47,4.66,13.29,10.59l48.86,158.78,33.57-70.5c2.5-5.24,7.79-8.58,13.59-8.58h55.2c8.31,0,15.06,6.74,15.06,15.06s-6.74,15.06-15.06,15.06h-45.7l-46.1,96.81c-2.51,5.27-7.82,8.58-13.59,8.58Z"/>
+  <circle class="cls-4" cx="443.81" cy="314.1" r="17.25"/>
+</svg>
