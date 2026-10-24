@@ -10,6 +10,7 @@ typedef struct EventsResult {
     int channels_ok;
 } EventsResult;
 
-void events_capture(const WCHAR *dir, const Config *cfg, EventsResult *res);
+/* trigger_ft: FILETIME (UTC) of the moment the trigger fired; event ages are measured from it, not from when this runs. */
+void events_capture(const WCHAR *dir, const Config *cfg, ULONGLONG trigger_ft, EventsResult *res);
 
 #endif

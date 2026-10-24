@@ -111,13 +111,12 @@ static bool run_query(EvCtx *c, const WCHAR *channel, const WCHAR *xpath, int ma
     return true;
 }
 
-void events_capture(const WCHAR *dir, const Config *cfg, EventsResult *res) {
+void events_capture(const WCHAR *dir, const Config *cfg, ULONGLONG trigger_ft, EventsResult *res) {
     memset(res, 0, sizeof *res);
     event_summary_init(&res->summary);
     EvCtx c; memset(&c, 0, sizeof c);
     c.sum = &res->summary; c.redact = cfg->redact; c.fmt_budget = 120;
-    FILETIME now; GetSystemTimeAsFileTime(&now);
-    c.trig_ft = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
+    c.trig_ft = trigger_ft;
     c.vcap = 8192; c.vbuf = (BYTE *)malloc(c.vcap);
     c.render = EvtCreateRenderContext(0, NULL, EvtRenderContextSystem);
     WCHAR path[WFT_PATH_CCH]; wft_wsnprintf(path, WFT_PATH_CCH, L"%ls\\events_digest.csv", dir);
