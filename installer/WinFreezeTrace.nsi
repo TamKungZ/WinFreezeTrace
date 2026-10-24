@@ -76,6 +76,10 @@ FunctionEnd
 
 Section "${APP} (required)" SecMain
   SectionIn RO
+  ; Upgrade: ask a running tray instance of this session to quit so its files can be replaced.
+  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +2
+    nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
+  Pop $0
   SetOutPath "$INSTDIR"
   File "${EXE}"
   File "${DLL}"
@@ -114,6 +118,11 @@ Section "Add to system PATH (run `WinFreezeTrace` from any terminal)" SecPath
   ${EndIf}
 SectionEnd
 
+Section /o "Start with Windows for all users (Startup apps)" SecStartup
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}" '"$INSTDIR\WinFreezeTrace.exe"'
+  WriteRegDWORD HKLM "Software\${APP}" "StartupAdded" 1
+SectionEnd
+
 Section "Start Menu shortcuts" SecShortcuts
   SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\${APP}"
@@ -123,20 +132,28 @@ SectionEnd
 
 LangString DESC_Main ${LANG_ENGLISH} "The recorder (WinFreezeTrace.exe + WinFreezeTraceCore.dll), documentation and the optional logon-task scripts."
 LangString DESC_Path ${LANG_ENGLISH} "Adds the install folder to the machine PATH so WinFreezeTrace can be called by name."
+LangString DESC_Startup ${LANG_ENGLISH} "Starts WinFreezeTrace (tray icon) when any user signs in. It then appears in Settings > Apps > Startup, where it can be switched off. Each user can also toggle it from the tray menu."
 LangString DESC_SM ${LANG_ENGLISH} "Start Menu entries for all users."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} $(DESC_Main)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecPath} $(DESC_Path)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} $(DESC_Startup)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecShortcuts} $(DESC_SM)
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"
   SetShellVarContext all
 
+  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +2
+    nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
+  Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APP}"'
   Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /F /TN "${APP}"'
   Pop $0
+
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"   ; the installing user's tray setting
 
   ReadRegDWORD $1 HKLM "Software\${APP}" "PathAdded"
   ${If} $1 == 1
