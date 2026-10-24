@@ -11,6 +11,7 @@
 #include "win/foreground.h"
 #include "win/report.h"
 #include "win/ui.h"
+#include "win/startup.h"
 
 #include "ring.h"
 #include "trigger.h"
@@ -29,10 +30,15 @@ static void log_config(const Config *c, const PdhState *p, bool ui_ok) {
     for (int i = 0; i < c->warning_count; ++i) log_msg("WARN", "config: %s", c->warnings[i]);
     if (!p->ok) log_msg("WARN", "PDH unavailable: only memory/system metrics will be recorded");
     else if (p->missing) log_msg("WARN", "%d performance counter(s) are unavailable on this system (their columns will be empty)", p->missing);
-    if (!ui_ok) log_msg("WARN", "no hidden window: hotkey and sleep/resume detection are disabled");
+    if (!ui_ok) log_msg("WARN", "no hidden window: hotkey, tray icon and sleep/resume notifications are disabled");
+    else if (c->tray) log_msg("INFO", "tray icon active: click it to turn monitoring on/off, right-click for the menu (Exit, Start with Windows)");
 }
 
 const char *WftVersion(void) { return WFT_VERSION; }
+
+#define SINGLETON_NAME L"Local\\WinFreezeTrace.Singleton.v2"
+
+static void say(const char *text) { plat_print(text); }
 
 int WftRun(HINSTANCE inst) {
     plat_init();
@@ -57,61 +63,125 @@ int WftRun(HINSTANCE inst) {
         return 64;
     }
 
+    /* --exit: politely ask the running instance of this session to quit (same as tray > Exit). */
+    if (cfg.exit_running) {
+        HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, SINGLETON_NAME);
+        if (!m) { say("WinFreezeTrace is not running in this session.\n"); return 0; }
+        CloseHandle(m);
+        ui_request_running_instance_exit();
+        for (int i = 0; i < 100; ++i) {                  /* wait up to ~10 s (a capture may be in progress) */
+            Sleep(100);
+            m = OpenMutexW(SYNCHRONIZE, FALSE, SINGLETON_NAME);
+            if (!m) { say("WinFreezeTrace stopped.\n"); return 0; }
+            CloseHandle(m);
+        }
+        say("WinFreezeTrace did not stop within 10 seconds.\n");
+        return 1;
+    }
+
+    /* Resolve the report folder (no directory is created yet: --add-startup/--remove-startup must have no side effects). */
     if (!cfg.report_dir_set) wft_wsnprintf(cfg.report_root, WFT_PATH_CCH, L"%ls", default_reports);
     else {
         WCHAR abs[WFT_PATH_CCH];
-        if (!plat_abs_path(cfg.report_root, abs, WFT_PATH_CCH)) { log_msg("ERROR", "invalid --report-dir"); return 64; }
+        if (!plat_abs_path(cfg.report_root, abs, WFT_PATH_CCH)) { log_msg("ERROR", "invalid --report-dir"); say("WinFreezeTrace: invalid --report-dir\n"); return 64; }
         wft_wsnprintf(cfg.report_root, WFT_PATH_CCH, L"%ls", abs);
     }
-    if (plat_create_private_dir(cfg.report_root) == DIR_FAILED)
+
+    /* The options a start-up entry must repeat (absolute --report-dir, never the one-shot commands). */
+    WCHAR run_args[2048];
+    if (!config_format_args(&cfg, run_args, sizeof run_args / sizeof run_args[0])) {
+        run_args[0] = 0;
+        log_msg("WARN", "options are too long to store in the Startup apps entry; it will start with defaults");
+    }
+
+    if (cfg.startup_action != STARTUP_NONE) {
+        bool add = cfg.startup_action == STARTUP_ADD;
+        bool ok = startup_set(add, run_args);
+        log_msg(ok ? "INFO" : "ERROR", "%s Startup apps entry %s", add ? "adding" : "removing", ok ? "succeeded" : "failed");
+        say(ok ? (add ? "WinFreezeTrace will start when you sign in (see Settings > Apps > Startup).\n" : "WinFreezeTrace removed from Startup apps.\n")
+               : "WinFreezeTrace: could not update the Startup apps entry.\n");
+        return ok ? 0 : 1;
+    }
+
+    HANDLE singleton = CreateMutexW(NULL, TRUE, SINGLETON_NAME);
+    if (!singleton || GetLastError() == ERROR_ALREADY_EXISTS) {
+        log_msg("INFO", "another instance is already running in this session; exiting");
+        ui_ping_running_instance();                      /* its tray icon tells the user it is already running */
+        if (singleton) CloseHandle(singleton);
+        return 2;
+    }
+
+    if (plat_create_private_dir_tree(cfg.report_root) == DIR_FAILED)
         log_msg_w("ERROR", "cannot create report folder %s; captures will fail until it exists", cfg.report_root);
 
-    HANDLE singleton = CreateMutexW(NULL, TRUE, L"Local\\WinFreezeTrace.Singleton.v2");
-    if (!singleton || GetLastError() == ERROR_ALREADY_EXISTS) { log_msg("INFO", "another instance is already running in this session; exiting"); return 2; }
-
     HANDLE stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    HANDLE wake = CreateEventW(NULL, FALSE, FALSE, NULL);          /* auto-reset: hotkey / on-off toggle */
     SampleRing ring; int cap = config_ring_capacity(&cfg);
     Sample *lin = (Sample *)calloc((size_t)cap, sizeof(Sample));
-    if (!stop || !lin || !ring_init(&ring, cap)) { log_msg("FATAL", "out of memory"); return 3; }
+    if (!stop || !wake || !lin || !ring_init(&ring, cap)) { log_msg("FATAL", "out of memory"); return 3; }
 
     PdhState pdh; metrics_init(&pdh);
-    bool ui_ok = ui_start(inst, stop, cfg.hotkey);
+    UiOptions uo; memset(&uo, 0, sizeof uo);
+    uo.hotkey = cfg.hotkey; uo.tray = cfg.tray; uo.notify = cfg.notify; uo.reports_dir = cfg.report_root; uo.run_args = run_args;
+    bool ui_ok = ui_start(inst, stop, wake, &uo);
     log_config(&cfg, &pdh, ui_ok);
 
     TriggerConfig tc; trigger_config_default(&tc, cfg.stall_ms, cfg.hang_samples, cfg.cooldown_seconds);
     TriggerState ts; trigger_init(&ts);
     const DWORD self = plat_self_pid();
     double last_suppress_log = -1e12;
+    bool was_paused = false;
+    HANDLE waits[2] = { stop, wake };
 
     for (;;) {
-        double t0 = plat_qpc_ms();
-        if (WaitForSingleObject(stop, cfg.interval_ms) == WAIT_OBJECT_0) break;
-        double wake = plat_qpc_ms();
-        int late = (int)((wake - t0) - (double)cfg.interval_ms);
-        if (late < 0) late = 0;
+        if (ui_paused()) {                               /* switched off from the tray: no sampling, no probing, no triggers */
+            if (!was_paused) {
+                was_paused = true;
+                ring_reset(&ring);                       /* a gap would corrupt the baseline when monitoring resumes */
+                trigger_init(&ts);
+            }
+            ui_take_manual(); ui_take_resume();
+            if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) break;
+            continue;
+        }
+        if (was_paused) { was_paused = false; log_msg("INFO", "monitoring resumed"); }
+
+        double t0 = plat_qpc_ms(), u0 = plat_unbiased_ms();
+        if (WaitForMultipleObjects(2, waits, FALSE, cfg.interval_ms) == WAIT_OBJECT_0) break;
+        double wake_ms = plat_qpc_ms(), u1 = plat_unbiased_ms();
+        double slept = 0.0;
+        int late = trigger_late_ms(wake_ms - t0, (u0 >= 0.0 && u1 >= 0.0) ? u1 - u0 : -1.0, cfg.interval_ms, &slept);
+        if (slept > 0.0) {                               /* detected even when no power broadcast reached us */
+            log_msg("INFO", "system slept for about %.0f s; treating the wake-up as a resume", slept / 1000.0);
+            trigger_note_resume(&ts, &tc, wake_ms);
+        }
+        if (ui_paused()) continue;                       /* toggled off during the wait */
 
         Sample s; memset(&s, 0, sizeof s);
         plat_local_time(&s.ts);
-        s.mono_ms = wake; s.wake_late_ms = late;
+        s.mono_ms = wake_ms; s.wake_late_ms = late;
         metrics_collect(&pdh, &s.m);
         ForegroundInfo fi; foreground_probe(&fi, cfg.hang_timeout_ms, self);
         foreground_to_sample(&fi, &s);
         ring_push(&ring, &s);
 
-        if (ui_take_resume()) trigger_note_resume(&ts, &tc, wake);
-        TriggerInput ti; ti.now_ms = wake; ti.late_ms = late; ti.probe_status = fi.status; ti.manual = ui_take_manual();
+        if (ui_take_resume()) trigger_note_resume(&ts, &tc, wake_ms);
+        TriggerInput ti; ti.now_ms = wake_ms; ti.late_ms = late; ti.probe_status = fi.status; ti.manual = ui_take_manual();
         TriggerDecision d = trigger_evaluate(&ts, &tc, &ti);
 
-        if (d.suppressed && wake - last_suppress_log > 30000.0) {
+        if (d.suppressed && wake_ms - last_suppress_log > 30000.0) {
             log_msg("INFO", "trigger ignored (%s): wake lateness %d ms, probe %s", d.suppressed, late, probe_status_name(fi.status));
-            last_suppress_log = wake;
+            last_suppress_log = wake_ms;
         }
         if (d.reason != TRIGGER_NONE) {
             int n = ring_linearize(&ring, lin, cap);
-            WCHAR dir[WFT_PATH_CCH];
-            bool resumed_recently = wake < ts.resume_until_ms;
-            if (!capture_run(&cfg, d.reason, lin, n, &fi, resumed_recently, dir, WFT_PATH_CCH))
-                log_msg("ERROR", "capture failed for trigger %s", trigger_name(d.reason));
+            WCHAR dir[WFT_PATH_CCH]; dir[0] = 0;
+            bool resumed_recently = wake_ms < ts.resume_until_ms;
+            ui_set_capturing(true);
+            bool ok = capture_run(&cfg, d.reason, lin, n, &fi, resumed_recently, dir, WFT_PATH_CCH);
+            ui_set_capturing(false);
+            if (!ok) log_msg("ERROR", "capture failed for trigger %s", trigger_name(d.reason));
+            ui_capture_done(dir, ok);
             trigger_note_capture(&ts, plat_qpc_ms());
         }
     }
@@ -122,6 +192,7 @@ int WftRun(HINSTANCE inst) {
     ring_free(&ring);
     free(lin);
     CloseHandle(stop);
+    CloseHandle(wake);
     ReleaseMutex(singleton);
     CloseHandle(singleton);
     return 0;
