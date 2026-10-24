@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <wchar.h>
 
-#define WFT_VERSION    "0.4.0"
+#define WFT_VERSION    "0.5.0"
 #define WFT_MAX_RING   600          /* hard cap on retained samples        */
 #define WFT_PATH_CCH   1024         /* wide-char capacity for paths        */
 
