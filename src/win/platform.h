@@ -13,6 +13,8 @@ void   plat_local_time(WftTime *t);
 DWORD  plat_self_pid(void);
 
 typedef enum DirResult { DIR_CREATED, DIR_EXISTS, DIR_FAILED } DirResult;
+/* Security attributes granting access to the current user and SYSTEM only (for the control pipe). false = unavailable. */
+bool   plat_private_security(SECURITY_ATTRIBUTES *sa);
 /* Create a directory readable only by the current user and SYSTEM (protected DACL). */
 DirResult plat_create_private_dir(const WCHAR *path);
 /* Like plat_create_private_dir, but also creates missing parent folders (only the last one is made private). */

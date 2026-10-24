@@ -45,7 +45,7 @@ void plat_harden_process(void) {
         SetDefaultDllDirectories_t fn = (SetDefaultDllDirectories_t)(void *)GetProcAddress(k32, "SetDefaultDllDirectories");
         if (fn) fn(0x00000800 /* LOAD_LIBRARY_SEARCH_SYSTEM32 */);
     }
-    /* Crisp tray menu and correct window geometry on high-DPI screens (the app has no manifest). */
+    /* Correct window geometry on high-DPI screens (the app has no manifest). */
     HMODULE u32 = GetModuleHandleW(L"user32.dll");
     if (u32) {
         BOOL (WINAPI *set_aware)(void) = (BOOL (WINAPI *)(void))(void *)GetProcAddress(u32, "SetProcessDPIAware");
@@ -76,6 +76,12 @@ static bool build_private_sd(void) {
     free(tu);
     CloseHandle(tok);
     return ok;
+}
+
+bool plat_private_security(SECURITY_ATTRIBUTES *sa) {
+    if (!build_private_sd()) return false;
+    sa->nLength = sizeof *sa; sa->lpSecurityDescriptor = g_private_sd; sa->bInheritHandle = FALSE;
+    return true;
 }
 
 DirResult plat_create_private_dir(const WCHAR *path) {
