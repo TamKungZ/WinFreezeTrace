@@ -1,70 +1,331 @@
 <Page
     x:Class="WinFreezeTraceManager.Pages.SettingsPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    NavigationCacheMode="Required">
 
-    <ScrollViewer>
-        <StackPanel Padding="32,24,32,32" Spacing="16" MaxWidth="920" HorizontalAlignment="Left">
-            <TextBlock Text="Settings" Style="{StaticResource TitleTextBlockStyle}" />
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
 
-            <InfoBar x:Name="Notice" IsOpen="False" IsClosable="True" Severity="Informational" />
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <StackPanel Padding="32,16,32,32" Spacing="12" MaxWidth="960" HorizontalAlignment="Stretch">
+        <TextBlock Text="Settings" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,4" />
+        <TextBlock Style="{StaticResource Hint}"
+                   Text="Appearance and Manager options take effect immediately. Recorder options are applied with the buttons at the bottom." />
 
-            <!-- Manager -->
-            <Border Style="{StaticResource Card}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Manager" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <ToggleSwitch x:Name="StartupSwitch" Header="Start with Windows" OnContent="On" OffContent="Off" Toggled="Startup_Toggled" />
-                    <TextBlock Text="Adds WinFreezeTrace Manager to Settings > Apps > Startup. It starts hidden in the tray and then starts the recorder."
-                               TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <ToggleSwitch x:Name="AutoStartSwitch" Header="Start the recorder when the Manager starts" OnContent="On" OffContent="Off" Toggled="General_Toggled" />
-                    <ToggleSwitch x:Name="CloseToTraySwitch" Header="Closing the window keeps the Manager in the tray" OnContent="On" OffContent="Off" Toggled="General_Toggled" />
-                    <ToggleSwitch x:Name="NotifySwitch" Header="Notify me when a report is saved" OnContent="On" OffContent="Off" Toggled="General_Toggled" />
-                    <ToggleSwitch x:Name="StopOnExitSwitch" Header="Stop the recorder when the Manager exits" OnContent="On" OffContent="Off" Toggled="General_Toggled" />
-                    <TextBlock Text="Off (recommended): exiting the Manager leaves the recorder running, so a freeze can still be captured."
-                               TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                </StackPanel>
-            </Border>
+        <InfoBar x:Name="Notice" IsOpen="False" IsClosable="True" Severity="Informational" />
 
-            <!-- Recorder -->
-            <Border Style="{StaticResource Card}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Recorder" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                    <TextBlock Text="These options are passed to the recorder when the Manager starts it. A running recorder picks them up after Save and restart."
-                               TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        <TextBlock Text="Appearance" Style="{StaticResource SectionTitle}" />
+        <Border Style="{StaticResource Card}" Padding="20,4">
+          <StackPanel>
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Window material" TextWrapping="Wrap" />
+            <TextBlock Text="How the window background looks. Acrylic blurs and shows what is behind the window; Mica takes a soft tint from your wallpaper; Solid is plain." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ComboBox x:Name="BackdropBox" Grid.Column="1" Width="220" VerticalAlignment="Center" AutomationProperties.Name="Window material" SelectionChanged="Backdrop_Changed">
+              <ComboBoxItem Content="Acrylic (blurred, see-through)" Tag="acrylic" />
+              <ComboBoxItem Content="Mica" Tag="mica" />
+              <ComboBoxItem Content="Mica Alt" Tag="micaalt" />
+              <ComboBoxItem Content="Solid" Tag="none" />
+            </ComboBox>
+          </Grid>
+          </StackPanel>
+        </Border>
+        <TextBlock Text="Start-up and tray" Style="{StaticResource SectionTitle}" />
+        <Border Style="{StaticResource Card}" Padding="20,4">
+          <StackPanel>
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Start with Windows" TextWrapping="Wrap" />
+            <TextBlock Text="Starts the Manager hidden in the tray when you sign in (listed under Settings &gt; Apps &gt; Startup)." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="StartupSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Start with Windows" Toggled="Startup_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Start the recorder when the Manager starts" TextWrapping="Wrap" />
+            <TextBlock Text="Recommended. Without a running recorder nothing is captured." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="AutoStartSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Start the recorder when the Manager starts" Toggled="General_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Closing the window keeps the Manager in the tray" TextWrapping="Wrap" />
+            <TextBlock Text="Off: closing the window quits the Manager." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="CloseToTraySwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Closing the window keeps the Manager in the tray" Toggled="General_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Notify me when a report is saved" TextWrapping="Wrap" />
+            <TextBlock Text="Shows a notification you can click to open the report." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="NotifySwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Notify me when a report is saved" Toggled="General_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Stop the recorder when the Manager exits" TextWrapping="Wrap" />
+            <TextBlock Text="Off (recommended): exiting the Manager leaves the recorder running, so a freeze can still be captured." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="StopOnExitSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Stop the recorder when the Manager exits" Toggled="General_Toggled" />
+          </Grid>
+          </StackPanel>
+        </Border>
+        <TextBlock Text="When to capture a report" Style="{StaticResource SectionTitle}" />
+        <TextBlock Style="{StaticResource Hint}" Margin="2,-6,0,0" Text="The defaults suit most PCs. Change them only if you get too many or too few reports." />
+        <Border Style="{StaticResource Card}" Padding="20,4">
+          <StackPanel>
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Hotkey: Ctrl+Alt+F12" TextWrapping="Wrap" />
+            <TextBlock Text="Captures a report on demand, for example while an app is frozen." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="HotkeySwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Hotkey Ctrl+Alt+F12" Toggled="Recorder_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Check interval (ms)" TextWrapping="Wrap" />
+            <TextBlock Text="How often the recorder samples system health. Lower is more detailed and uses slightly more CPU." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="IntervalBox" Grid.Column="1" Minimum="250" Maximum="60000" SmallChange="250" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Check interval in milliseconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Whole-system stall limit (ms)" TextWrapping="Wrap" />
+            <TextBlock Text="Capture when the recorder's own timer runs this late, which means the whole system stalled." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="StallBox" Grid.Column="1" Minimum="500" Maximum="30000" SmallChange="100" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Whole-system stall limit in milliseconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Unresponsive-app timeout (ms)" TextWrapping="Wrap" />
+            <TextBlock Text="How long to wait for the foreground window to answer before counting it as stuck." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="HangTimeoutBox" Grid.Column="1" Minimum="50" Maximum="5000" SmallChange="50" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Unresponsive app timeout in milliseconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Stuck checks in a row" TextWrapping="Wrap" />
+            <TextBlock Text="How many consecutive stuck checks count as a hang. Higher means fewer false alarms." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="HangSamplesBox" Grid.Column="1" Minimum="2" Maximum="20" SmallChange="1" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Stuck checks in a row" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Pause between automatic reports (s)" TextWrapping="Wrap" />
+            <TextBlock Text="Minimum wait after a report, so one long freeze does not create dozens." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="CooldownBox" Grid.Column="1" Minimum="5" Maximum="86400" SmallChange="5" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Pause between automatic reports in seconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="History kept in memory (s)" TextWrapping="Wrap" />
+            <TextBlock Text="How much recent activity is held ready to be written into a report." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="HistoryBox" Grid.Column="1" Minimum="30" Maximum="600" SmallChange="30" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="History kept in memory in seconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          </StackPanel>
+        </Border>
+        <TextBlock Text="What a report contains" Style="{StaticResource SectionTitle}" />
+        <Border Style="{StaticResource Card}" Padding="20,4">
+          <StackPanel>
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Time before the freeze analysed (s)" TextWrapping="Wrap" />
+            <TextBlock Text="How far back the analysis looks to find what led up to the freeze." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="LeadBox" Grid.Column="1" Minimum="5" Maximum="300" SmallChange="5" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Time before the freeze analysed in seconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Keep the newest reports" TextWrapping="Wrap" />
+            <TextBlock Text="Older reports are deleted automatically. 0 keeps everything." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="MaxReportsBox" Grid.Column="1" Minimum="0" Maximum="5000" SmallChange="10" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Number of reports to keep" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Save a memory dump (target.dmp)" TextWrapping="Wrap" />
+            <TextBlock Text="Lets a developer inspect the frozen app. Briefly suspends the app while it is written, and can be large." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="DumpSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Save a memory dump" Toggled="Recorder_Toggled" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Skip the dump below this much free space (MB)" TextWrapping="Wrap" />
+            <TextBlock Text="0 turns this check off." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="MinFreeBox" Grid.Column="1" Minimum="0" Maximum="1048576" SmallChange="256" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Minimum free disk space for a dump in megabytes" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Give up on a dump after (ms)" TextWrapping="Wrap" />
+            <TextBlock Text="Stops a dump that takes too long so the app is not held frozen." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <NumberBox x:Name="DumpTimeoutBox" Grid.Column="1" Minimum="1000" Maximum="120000" SmallChange="1000" SpinButtonPlacementMode="Inline" Width="170" VerticalAlignment="Center" AutomationProperties.Name="Dump timeout in milliseconds" ValueChanged="Recorder_NumberChanged" />
+          </Grid>
+          <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+          <Grid ColumnSpacing="24" MinHeight="56" Padding="0,10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock Text="Hide personal details in reports" TextWrapping="Wrap" />
+            <TextBlock Text="Replaces user and computer names, serial numbers and window titles in the text reports." Style="{StaticResource Hint}" />
+            </StackPanel>
+            <ToggleSwitch x:Name="RedactSwitch" Grid.Column="1" OnContent="On" OffContent="Off" MinWidth="0" VerticalAlignment="Center" HorizontalAlignment="Right" AutomationProperties.Name="Hide personal details in reports" Toggled="Recorder_Toggled" />
+          </Grid>
+          </StackPanel>
+        </Border>
+        <InfoBar x:Name="RedactWarning" IsOpen="False" IsClosable="False" Severity="Warning"
+                 Title="target.dmp is not redacted"
+                 Message="Hiding personal details does not cover the memory dump. Turn the dump off before sharing a report with someone." />
+        <TextBlock Text="Locations" Style="{StaticResource SectionTitle}" />
+        <Border Style="{StaticResource Card}">
+          <StackPanel Spacing="16">
+            <StackPanel Spacing="6">
+              <TextBlock Text="Report folder" />
+              <TextBlock Style="{StaticResource Hint}" Text="Leave empty to use %LOCALAPPDATA%\WinFreezeTrace\reports." />
+              <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="ReportDirBox" AutomationProperties.Name="Report folder" PlaceholderText="Default folder" TextChanged="Recorder_TextChanged" />
+                <Button Grid.Column="1" Content="Browse..." Click="Browse_Click" />
+              </Grid>
+            </StackPanel>
+            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+            <StackPanel Spacing="6">
+              <TextBlock Text="Recorder program (WinFreezeTrace.exe)" />
+              <TextBlock Style="{StaticResource Hint}" Text="Leave empty to find it automatically next to the Manager." />
+              <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="CoreExeBox" AutomationProperties.Name="Recorder program location" PlaceholderText="Automatic" TextChanged="Recorder_TextChanged" />
+                <Button Grid.Column="1" Content="Browse..." Click="BrowseExe_Click" />
+              </Grid>
+              <TextBlock x:Name="CoreFound" Style="{StaticResource Hint}" IsTextSelectionEnabled="True" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
 
-                    <TextBlock Text="Sampling and triggers" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
-                    <NumberBox x:Name="IntervalBox" Header="Sampling interval (ms)" Minimum="250" Maximum="60000" SmallChange="250" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="HistoryBox" Header="History kept in memory (seconds)" Minimum="30" Maximum="600" SmallChange="30" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="StallBox" Header="Watchdog lateness that triggers a capture (ms)" Minimum="500" Maximum="30000" SmallChange="100" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="HangTimeoutBox" Header="Foreground window probe timeout (ms)" Minimum="50" Maximum="5000" SmallChange="50" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="HangSamplesBox" Header="Failed probes in a row" Minimum="2" Maximum="20" SmallChange="1" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="CooldownBox" Header="Gap between automatic captures (seconds)" Minimum="5" Maximum="86400" SmallChange="5" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <ToggleSwitch x:Name="HotkeySwitch" Header="Ctrl+Alt+F12 forces a capture" OnContent="On" OffContent="Off" />
-
-                    <TextBlock Text="Reports" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
-                    <NumberBox x:Name="LeadBox" Header="Lead-in window used by the analysis (seconds)" Minimum="5" Maximum="300" SmallChange="5" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="MaxReportsBox" Header="Keep the newest reports (0 = unlimited)" Minimum="0" Maximum="5000" SmallChange="10" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <ToggleSwitch x:Name="DumpSwitch" Header="Write target.dmp (suspends the frozen app briefly)" OnContent="On" OffContent="Off" />
-                    <NumberBox x:Name="MinFreeBox" Header="Skip the dump below this much free space (MB, 0 = off)" Minimum="0" Maximum="1048576" SmallChange="256" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <NumberBox x:Name="DumpTimeoutBox" Header="Abort a dump that takes longer than (ms)" Minimum="1000" Maximum="120000" SmallChange="1000" SpinButtonPlacementMode="Inline" Width="280" HorizontalAlignment="Left" />
-                    <ToggleSwitch x:Name="RedactSwitch" Header="Redact user and computer names, serial numbers, window titles" OnContent="On" OffContent="Off" />
-                    <TextBlock Text="Redaction does not cover target.dmp. Turn the dump off before sharing reports."
-                               TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-                    <TextBox x:Name="ReportDirBox" Header="Report folder (empty = %LOCALAPPDATA%\WinFreezeTrace\reports)" Width="560" HorizontalAlignment="Left" />
-                    <Button Content="Browse..." Click="Browse_Click" />
-
-                    <TextBlock Text="Recorder program" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
-                    <TextBox x:Name="CoreExeBox" Header="WinFreezeTrace.exe location (empty = find it automatically)" Width="560" HorizontalAlignment="Left" />
-                    <TextBlock x:Name="CoreFound" TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-                        <Button x:Name="SaveRestartButton" Style="{StaticResource AccentButtonStyle}" Content="Save and restart the recorder" Click="SaveRestart_Click" />
-                        <Button Content="Save only" Click="Save_Click" />
-                        <Button Content="Reset to defaults" Click="Reset_Click" />
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-        </StackPanel>
+        <HyperlinkButton Content="Restore the recorder options to their defaults" Click="Reset_Click" Margin="0,4,0,0" />
+      </StackPanel>
     </ScrollViewer>
+
+    <!-- Appears as soon as a recorder option is changed, so the way to apply it is never out of sight. -->
+    <Border x:Name="SaveBar" Grid.Row="1" Visibility="Collapsed" Padding="32,12"
+            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+            BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+      <Grid ColumnSpacing="12" MaxWidth="960">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center" Spacing="2">
+          <TextBlock Text="Recorder options changed" Style="{StaticResource BodyStrongTextBlockStyle}" />
+          <TextBlock x:Name="SaveBarHint" Style="{StaticResource Hint}" Text="The running recorder keeps using the old options until it is restarted." />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button x:Name="SaveRestartButton" Style="{StaticResource AccentButtonStyle}" Content="Save and restart recorder" Click="SaveRestart_Click" />
+          <Button x:Name="SaveButton" Content="Save only" Click="Save_Click" />
+          <Button Content="Discard" Click="Discard_Click" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
 </Page>

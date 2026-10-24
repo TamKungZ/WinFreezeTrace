@@ -7,11 +7,13 @@ namespace WinFreezeTraceManager.Pages;
 public sealed partial class SettingsPage : Page
 {
     private bool _loading;
+    private bool _dirty;      // recorder options edited but not saved yet
 
     public SettingsPage()
     {
         InitializeComponent();
-        Loaded += (_, _) => LoadFromSettings();
+        // The page is cached, so Loaded fires every time it is shown. Do not overwrite edits the user has not saved.
+        Loaded += (_, _) => { if (!_dirty) LoadFromSettings(); else UpdateCoreFound(); };
     }
 
     private void LoadFromSettings()
@@ -20,6 +22,7 @@ public sealed partial class SettingsPage : Page
         try
         {
             var s = App.Settings;
+            SelectBackdrop(s.Backdrop);
             StartupSwitch.IsOn = StartupRegistration.IsEnabled();
             AutoStartSwitch.IsOn = s.AutoStartRecorder;
             CloseToTraySwitch.IsOn = s.CloseToTray;
@@ -28,8 +31,17 @@ public sealed partial class SettingsPage : Page
             CoreExeBox.Text = s.CoreExePath;
             ShowRecorderOptions(s.Recorder);
             UpdateCoreFound();
+            SetDirty(false);
         }
         finally { _loading = false; }
+        UpdateDependents();
+    }
+
+    private void SelectBackdrop(string kind)
+    {
+        foreach (var o in BackdropBox.Items)
+            if (o is ComboBoxItem item && string.Equals(item.Tag as string, kind, StringComparison.Ordinal)) { BackdropBox.SelectedItem = item; return; }
+        BackdropBox.SelectedIndex = 0;
     }
 
     private void ShowRecorderOptions(RecorderOptions r)
@@ -88,7 +100,42 @@ public sealed partial class SettingsPage : Page
         Notice.IsOpen = true;
     }
 
-    // ---- Manager options: applied immediately ----
+    // ---- unsaved-changes tracking ----
+
+    private void SetDirty(bool dirty)
+    {
+        _dirty = dirty;
+        SaveBar.Visibility = dirty ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void MarkDirty()
+    {
+        if (_loading) return;
+        SetDirty(true);
+        UpdateDependents();
+    }
+
+    /// <summary>Options that only matter in combination: grey them out or warn instead of leaving the user to work it out.</summary>
+    private void UpdateDependents()
+    {
+        MinFreeBox.IsEnabled = DumpSwitch.IsOn;
+        DumpTimeoutBox.IsEnabled = DumpSwitch.IsOn;
+        RedactWarning.IsOpen = RedactSwitch.IsOn && DumpSwitch.IsOn;
+    }
+
+    private void Recorder_NumberChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => MarkDirty();
+    private void Recorder_Toggled(object sender, RoutedEventArgs e) => MarkDirty();
+    private void Recorder_TextChanged(object sender, TextChangedEventArgs e) => MarkDirty();
+
+    // ---- Appearance and Manager options: applied immediately ----
+
+    private void Backdrop_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || BackdropBox.SelectedItem is not ComboBoxItem item || item.Tag is not string kind) return;
+        App.Settings.Backdrop = kind;
+        App.MainWindowInstance?.ApplyBackdrop(kind);
+        if (!App.Settings.Save(out var err)) Info("Settings could not be saved: " + err, InfoBarSeverity.Error);
+    }
 
     private void Startup_Toggled(object sender, RoutedEventArgs e)
     {
@@ -126,11 +173,39 @@ public sealed partial class SettingsPage : Page
         catch (Exception ex) { Info("The folder picker failed: " + ex.Message, InfoBarSeverity.Error); }
     }
 
+    private async void BrowseExe_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, App.WindowHandle);
+            picker.FileTypeFilter.Add(".exe");
+            var file = await picker.PickSingleFileAsync();
+            if (file != null) CoreExeBox.Text = file.Path;
+        }
+        catch (Exception ex) { Info("The file picker failed: " + ex.Message, InfoBarSeverity.Error); }
+    }
+
+    /// <summary>Checks what the recorder would reject anyway, and says so before anything is written.</summary>
+    private string? Validate()
+    {
+        var dir = ReportDirBox.Text.Trim();
+        if (dir.Length > 0 && dir.IndexOfAny(new[] { '<', '>', '"', '|', '?', '*' }) >= 0)
+            return "The report folder contains a character that is not allowed in a path (< > \" | ? *).";
+        var exe = CoreExeBox.Text.Trim();
+        if (exe.Length > 0 && !File.Exists(exe))
+            return "The recorder program was not found at \"" + exe + "\". Clear the box to find it automatically.";
+        return null;
+    }
+
     private bool SaveAll()
     {
+        var problem = Validate();
+        if (problem != null) { Info(problem, InfoBarSeverity.Error); return false; }
         ReadRecorderOptions();
         if (!App.Settings.Save(out var err)) { Info("Settings could not be saved: " + err, InfoBarSeverity.Error); return false; }
         UpdateCoreFound();
+        SetDirty(false);
         return true;
     }
 
@@ -143,13 +218,20 @@ public sealed partial class SettingsPage : Page
     {
         if (!SaveAll()) return;
         SaveRestartButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
         try
         {
             var err = await Actions.RestartRecorderAsync();
-            if (err != null) Info(err, InfoBarSeverity.Error);
+            if (err != null) Info("Saved, but the recorder could not be restarted: " + err, InfoBarSeverity.Error);
             else Info("Saved. The recorder was restarted with the new options.", InfoBarSeverity.Success);
         }
-        finally { SaveRestartButton.IsEnabled = true; }
+        finally { SaveRestartButton.IsEnabled = true; SaveButton.IsEnabled = true; }
+    }
+
+    private void Discard_Click(object sender, RoutedEventArgs e)
+    {
+        LoadFromSettings();
+        Info("Changes discarded.", InfoBarSeverity.Informational);
     }
 
     private void Reset_Click(object sender, RoutedEventArgs e)
@@ -157,6 +239,8 @@ public sealed partial class SettingsPage : Page
         _loading = true;
         try { ShowRecorderOptions(new RecorderOptions()); }
         finally { _loading = false; }
-        Info("Defaults restored in the form. Choose Save to keep them.", InfoBarSeverity.Informational);
+        SetDirty(true);
+        UpdateDependents();
+        Info("Defaults are filled in. Choose Save to keep them.", InfoBarSeverity.Informational);
     }
 }

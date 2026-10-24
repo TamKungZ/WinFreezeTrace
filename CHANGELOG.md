@@ -9,12 +9,30 @@
 - The three tray icons (`tray_on.ico`, `tray_off.ico`, `tray_busy.ico`) were redrawn from the same artwork. The badge in the corner keeps the
   old meaning: green check = monitoring, grey pause = off/paused, orange ring = busy/capturing.
 - All icon files contain 16, 20, 24, 32, 40, 48, 64, 128 and 256 px images, each rendered from the SVG at its own size.
+- **Manager UI/UX pass** (Windows 11 look and clearer wording):
+  - Title bar merged into the window, DPI-aware start size that always fits the screen, window centred on first show.
+  - Window material is selectable in Settings: **Acrylic** (blurred, see-through; the new default), Mica, Mica Alt or Solid. It falls back
+    automatically when the OS does not support the material.
+  - The recorder state (on / off / saving / not running) is shown in the navigation pane on every page.
+  - Dashboard: one clear status with one primary action; "Stop the recorder" moved into a **More** menu and asks for confirmation;
+    warnings when the recorder program is missing or reports failed to save; saved/failed/hotkey tiles; a helpful empty state.
+  - Reports: command bar with icons, F5 refresh and Del delete, readable trigger names ("System stall", "App not responding",
+    "Manual capture") and "5 min ago" times, empty state, preview title.
+  - Settings: grouped into Appearance, Start-up and tray, When to capture a report, What a report contains and Locations; every option has a plain-language
+    description; a bar appears at the bottom as soon as a recorder option is changed (Save and restart recorder / Save only / Discard);
+    unsaved edits survive switching pages; the memory-dump options grey out when the dump is off; a warning shows when redaction is on but the dump is not;
+    the report folder and the recorder program are validated before saving; Browse button for WinFreezeTrace.exe.
+  - Content cards now share one width instead of sizing to their text.
+  - A one-time notification explains that closing the window leaves the Manager running in the tray.
 - Version bumped to 0.7.0 (`CMakeLists.txt`, `src/core/wft_types.h`, `src/version.rc`, Manager `.csproj`).
 
 ### Verification status
 
 - Icons were rendered and inspected at 256 px and 16 px. They have **not** yet been seen on a real Windows tray, in the installer or in the
-  Manager's About page, and the Manager and installer were not rebuilt for this change.
+  Manager's About page.
+- The Manager UI changes were written without a Windows toolchain: every XAML file is well-formed, every `x:Name` and event handler used by the code-behind exists,
+  and all C# files parse. **The Manager has not been compiled or run**; build it and click through every page (also with Windows 10, with
+  "Transparency effects" turned off, and at 125 %/200 % scaling) before releasing. The installer was not rebuilt.
 
 ## 0.6.0
 

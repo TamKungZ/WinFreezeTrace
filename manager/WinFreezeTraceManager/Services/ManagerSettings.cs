@@ -67,6 +67,8 @@ internal sealed class ManagerSettings
     public bool CloseToTray { get; set; } = true;           // the close button hides the window
     public bool ShowNotifications { get; set; } = true;     // balloon when a report is saved
     public bool StopRecorderOnExit { get; set; } = false;   // plain "Exit" also stops the recorder
+    public string Backdrop { get; set; } = "acrylic";       // window material: acrylic | mica | micaalt | none
+    public bool TrayHintShown { get; set; } = false;        // the one-time "still running in the tray" balloon was shown
     public RecorderOptions Recorder { get; set; } = new();
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };

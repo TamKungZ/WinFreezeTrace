@@ -11,6 +11,40 @@ internal sealed class ReportItem
     public string Trigger { get; init; } = "";
     public string SummaryPath => System.IO.Path.Combine(Path, "summary.txt");
     public string WhenText => When?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture) ?? Name;
+
+    private static readonly (string Key, string Label)[] TriggerLabels =
+    {
+        ("scheduler_stall", "System stall"),
+        ("foreground_app_hang", "App not responding"),
+        ("manual_hotkey", "Manual capture"),
+    };
+
+    /// <summary>The trigger folder suffix (scheduler_stall, foreground_app_hang, ...) in words a person can read.</summary>
+    public string TriggerLabel
+    {
+        get
+        {
+            foreach (var (key, label) in TriggerLabels)
+                if (Trigger.StartsWith(key, StringComparison.Ordinal)) return label;
+            return Trigger.Length == 0 ? "Report" : Trigger.Replace('_', ' ');
+        }
+    }
+
+    /// <summary>"5 min ago", "yesterday", ... Empty when the folder name has no usable time.</summary>
+    public string AgoText
+    {
+        get
+        {
+            if (When is not { } w) return "";
+            var d = DateTime.Now - w;
+            if (d < TimeSpan.Zero) return "";
+            if (d.TotalMinutes < 1) return "just now";
+            if (d.TotalHours < 1) return (int)d.TotalMinutes + " min ago";
+            if (d.TotalDays < 1) return (int)d.TotalHours + " h ago";
+            if (d.TotalDays < 2) return "yesterday";
+            return (int)d.TotalDays + " days ago";
+        }
+    }
 }
 
 /// <summary>Lists incident folders named yyyyMMdd_HHmmss_&lt;trigger&gt;[_n] under the report root.</summary>
