@@ -15,7 +15,7 @@ if not defined LOCALAPPDATA (
 
 echo Stopping WinFreezeTrace...
 schtasks.exe /End /TN "%TASK_NAME%" >nul 2>nul
-rem Ask a running tray instance to quit cleanly first (it may be in the middle of writing a report).
+rem Ask a running recorder to quit cleanly first (it may be in the middle of writing a report).
 if exist "%TARGET%" "%TARGET%" --exit >nul 2>nul
 taskkill.exe /F /FI "USERNAME eq %ME%" /IM WinFreezeTrace.exe >nul 2>nul
 timeout.exe /T 1 /NOBREAK >nul
@@ -35,9 +35,11 @@ if not errorlevel 1 (
   )
 )
 
-rem The "Start with Windows" tray setting lives in the Startup apps list; it would point at the file removed below.
+rem The "Start with Windows" entries live in the Startup apps list (0.5.x: the recorder; 0.6.0+: the Manager); they would point at removed files.
 reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v WinFreezeTrace /f >nul 2>nul
 reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" /v WinFreezeTrace /f >nul 2>nul
+reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "WinFreezeTrace Manager" /f >nul 2>nul
+reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" /v "WinFreezeTrace Manager" /f >nul 2>nul
 
 if exist "%TARGET%" del /F /Q "%TARGET%" >nul 2>nul
 if exist "%TARGET%" (

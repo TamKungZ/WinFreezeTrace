@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0
+
+### Changed (split: recorder + Manager)
+
+- **The tray icon, balloons, menu and Start with Windows moved out of the recorder** into a new, separate WinUI 3 program,
+  **WinFreezeTrace Manager** (`manager/`). The recorder now only monitors and captures.
+- New control channel in the recorder (`src/win/control.c`): a per-user named pipe
+  `\\.\pipe\WinFreezeTrace.Control.v1.<session>` (current user and SYSTEM only, local clients only) with the commands
+  `STATUS`, `PAUSE`, `RESUME`, `CAPTURE`, `EXIT`. The Manager is a pure client of it.
+- `ui.c` became `hostwin.c`: the hidden window that keeps the hotkey, suspend/resume and session-end handling.
+- Removed `startup.c`; `--add-startup` / `--remove-startup` now fail with a pointer to the Manager. `--no-tray` and
+  `--no-notify` are still accepted and ignored so that 0.5.x startup entries and tasks keep working.
+- Left-click on the tray icon now opens the Manager window (it used to toggle monitoring); the toggle is in the menu and on the dashboard.
+
+### Added
+
+- WinFreezeTrace Manager: dashboard, report browser with `summary.txt` preview, settings for every recorder option,
+  per-user Start with Windows (migrates a 0.5.x entry), single instance, `--background`, `--exit`.
+- Installer: the Manager is an optional component, **selected by default** (`/MANAGER=0` for silent installs without it).
+  Start Menu shortcut and the all-users startup entry point at the Manager when it is installed.
+- The release workflow publishes the Manager for x64 and x86 and bundles it in the installer and the portable zip.
+
+### Verification status
+
+- Core tests: 119 checks pass under AddressSanitizer/UBSan. `control.c` and `hostwin.c` pass `-fsyntax-only` against stand-in headers.
+- **Not yet built or run:** the Manager (C#/XAML), the changed Windows C files against the real SDK, and the NSIS script.
+  The first CI run and a manual pass on Windows are required.
+
 ## 0.5.0
 
 ### Verification status

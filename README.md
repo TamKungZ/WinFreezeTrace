@@ -13,33 +13,28 @@ WinFreezeTrace.exe --help
 
 Default manual capture hotkey: `Ctrl+Alt+F12`.
 
-### Tray icon
+### WinFreezeTrace Manager (tray icon and control window)
 
-While running, WinFreezeTrace shows an icon in the notification area (click `^` if Windows hides it):
+The recorder (`WinFreezeTrace.exe` + `WinFreezeTraceCore.dll`) has **no window and no tray icon**: it only monitors and captures. Everything you interact with lives in a separate WinUI 3 program, **WinFreezeTrace Manager** (`Manager\WinFreezeTraceManager.exe`), which is installed by default (the installer lets you untick it, or pass `/MANAGER=0` to a silent install).
 
-| Icon | Meaning |
+| Tray icon | Meaning |
 | --- | --- |
-| Green check | Monitoring is **on** |
-| Grey pause bars | Monitoring is **off**: no sampling, no probing, no captures, no hotkey |
-| Orange dot | A report is being written |
+| Green check badge | Monitoring is **on** |
+| Grey pause badge | Monitoring is **off**: no sampling, no probing, no captures, no hotkey |
+| Orange dot badge | A report is being written, or the recorder is not running (grey) |
 
-- **Left-click** the icon to turn monitoring on or off (a double-click toggles only once).
-- **Right-click** for the menu: current status, *Turn monitoring ON/OFF*, *Start with Windows*, *Open reports folder*, *Exit*.
-- After a capture a balloon appears; click it to open the report folder.
+- **Left-click** the tray icon to open the window; **right-click** for the menu (status, turn monitoring on/off, capture now, open reports folder, Start with Windows, Exit, Exit and stop the recorder).
+- **Dashboard**: state, on/off, *Capture report now*, latest report. **Reports**: browse, preview `summary.txt`, open or delete incidents. **Settings**: start with Windows, recorder options (interval, triggers, dump, redaction, report folder), *Save and restart the recorder*.
+- The Manager starts the recorder (with the options from Settings) if it is not running, and talks to it over a per-user named pipe. Closing the window hides it to the tray; exiting the Manager leaves the recorder running unless you choose *Exit and stop the recorder*.
 - Turning monitoring off discards the in-memory history, so the baseline in the next report never spans the gap.
-- `--no-tray` runs without the icon, `--no-notify` suppresses balloons. A second launch just tells the running copy to show a "already running" balloon.
+
+The recorder works without the Manager. Run it directly, from `install_task.cmd`, or from the all-users startup entry; use `WinFreezeTrace.exe --exit` to stop it.
 
 ### Start with Windows
 
-Use *Start with Windows* in the tray menu, or from a terminal:
+Use *Settings > Start with Windows* in the Manager. It adds a per-user entry for the Manager (visible under **Settings > Apps > Startup** and Task Manager > Startup) that starts hidden in the tray and then starts the recorder. The old `--add-startup` / `--remove-startup` recorder options are gone; an entry made by 0.5.x is migrated the first time the Manager runs.
 
-```bat
-WinFreezeTrace.exe --add-startup --interval 2000
-WinFreezeTrace.exe --remove-startup
-WinFreezeTrace.exe --exit
-```
-
-This adds a per-user entry that appears under **Settings > Apps > Startup** (and Task Manager > Startup), where it can also be switched off; the other options you pass are stored with it. `--exit` asks the running copy of this session to quit. `install_task.cmd` is an alternative that registers a scheduled task with automatic restart; having both is harmless because only one instance runs per session. The installer has an optional "Start with Windows for all users" component.
+`install_task.cmd` is an alternative that registers a scheduled task with automatic restart of the recorder alone; having both is harmless because only one recorder runs per session. The installer has an optional \"Start with Windows for all users\" component (it starts the Manager if installed, otherwise the recorder).
 
 For lower capture impact and no process dump:
 
@@ -47,7 +42,7 @@ For lower capture impact and no process dump:
 WinFreezeTrace.exe --interval 2000 --no-dump
 ```
 
-To run at logon, execute `install_task.cmd`. Use `uninstall_task.cmd` to remove the task, executable and DLL, or `uninstall_task.cmd --purge` to delete reports and logs too.
+To run the recorder alone at logon, execute `install_task.cmd`. Use `uninstall_task.cmd` to remove the task, executable and DLL, or `uninstall_task.cmd --purge` to delete reports and logs too.
 
 ## Capture triggers
 
@@ -74,6 +69,14 @@ Capture is more expensive than monitoring. Creating `target.dmp` suspends the fo
 A hard system lock may prevent a report from being written, and one-second sampling can miss short spikes. `WM_NULL` does not detect every type of app or GPU hang. A report with no findings does not establish that the system is healthy.
 
 ## Build and test
+
+Recorder and tests (as below), then the Manager (needs the .NET 8 SDK and the Windows App SDK workload on Windows):
+
+```bat
+dotnet publish manager\WinFreezeTraceManager\WinFreezeTraceManager.csproj -c Release -r win-x64 -p:Platform=x64 -o manager-out
+```
+
+The Manager is self-contained; copy `manager-out` next to the recorder as a `Manager` folder.
 
 Visual Studio Developer Command Prompt:
 

@@ -36,7 +36,7 @@ if errorlevel 1 (
 
 echo Stopping an existing WinFreezeTrace task and process of this user...
 schtasks.exe /End /TN "%TASK_NAME%" >nul 2>nul
-rem Ask a running tray instance to quit cleanly first (it may be in the middle of writing a report).
+rem Ask a running recorder to quit cleanly first (it may be in the middle of writing a report).
 if exist "%TARGET%" "%TARGET%" --exit >nul 2>nul
 rem Only this user's instance: never kill another user's recorder on a shared PC.
 taskkill.exe /F /FI "USERNAME eq %ME%" /IM WinFreezeTrace.exe >nul 2>nul
@@ -103,7 +103,7 @@ if errorlevel 1 (
 echo WinFreezeTrace installed successfully.
 echo Executable: "%TARGET%"
 echo Task: %TASK_NAME% ^(current user, LIMITED, starts at logon^)
-echo Tray icon: click it to turn monitoring on/off, right-click for Exit and Start with Windows.
+echo The recorder has no tray icon: use WinFreezeTrace Manager ^(a separate program^) to turn monitoring on/off.
 echo Log: "%LOCALAPPDATA%\WinFreezeTrace\winfreezetrace.log"
 echo Reports: "%LOCALAPPDATA%\WinFreezeTrace\reports"
 exit /b 0
