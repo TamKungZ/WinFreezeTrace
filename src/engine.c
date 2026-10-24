@@ -10,8 +10,8 @@
 #include "win/metrics.h"
 #include "win/foreground.h"
 #include "win/report.h"
-#include "win/ui.h"
-#include "win/startup.h"
+#include "win/hostwin.h"
+#include "win/control.h"
 
 #include "ring.h"
 #include "trigger.h"
@@ -22,7 +22,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-static void log_config(const Config *c, const PdhState *p, bool ui_ok) {
+static void log_config(const Config *c, const PdhState *p, bool host_ok, bool control_ok) {
     log_msg("INFO", "WinFreezeTrace %s started: interval=%lu ms history=%lu s stall=%lu ms hang=%lu ms x%lu cooldown=%lu s dump=%s redact=%s max-reports=%lu",
             WFT_VERSION, (unsigned long)c->interval_ms, (unsigned long)c->history_seconds, (unsigned long)c->stall_ms, (unsigned long)c->hang_timeout_ms,
             (unsigned long)c->hang_samples, (unsigned long)c->cooldown_seconds, c->make_dump ? "on" : "off", c->redact ? "on" : "off", (unsigned long)c->max_reports);
@@ -30,8 +30,8 @@ static void log_config(const Config *c, const PdhState *p, bool ui_ok) {
     for (int i = 0; i < c->warning_count; ++i) log_msg("WARN", "config: %s", c->warnings[i]);
     if (!p->ok) log_msg("WARN", "PDH unavailable: only memory/system metrics will be recorded");
     else if (p->missing) log_msg("WARN", "%d performance counter(s) are unavailable on this system (their columns will be empty)", p->missing);
-    if (!ui_ok) log_msg("WARN", "no hidden window: hotkey, tray icon and sleep/resume notifications are disabled");
-    else if (c->tray) log_msg("INFO", "tray icon active: click it to turn monitoring on/off, right-click for the menu (Exit, Start with Windows)");
+    if (!host_ok) log_msg("WARN", "no hidden window: hotkey and sleep/resume notifications are disabled");
+    if (!control_ok) log_msg("WARN", "no control pipe: WinFreezeTrace Manager cannot show the state or switch monitoring on/off");
 }
 
 const char *WftVersion(void) { return WFT_VERSION; }
@@ -63,12 +63,12 @@ int WftRun(HINSTANCE inst) {
         return 64;
     }
 
-    /* --exit: politely ask the running instance of this session to quit (same as tray > Exit). */
+    /* --exit: politely ask the running instance of this session to quit (same as the Manager's Exit). */
     if (cfg.exit_running) {
         HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, SINGLETON_NAME);
         if (!m) { say("WinFreezeTrace is not running in this session.\n"); return 0; }
         CloseHandle(m);
-        ui_request_running_instance_exit();
+        host_request_running_instance_exit();
         for (int i = 0; i < 100; ++i) {                  /* wait up to ~10 s (a capture may be in progress) */
             Sleep(100);
             m = OpenMutexW(SYNCHRONIZE, FALSE, SINGLETON_NAME);
@@ -79,7 +79,7 @@ int WftRun(HINSTANCE inst) {
         return 1;
     }
 
-    /* Resolve the report folder (no directory is created yet: --add-startup/--remove-startup must have no side effects). */
+    /* Resolve the report folder (no directory is created yet). */
     if (!cfg.report_dir_set) wft_wsnprintf(cfg.report_root, WFT_PATH_CCH, L"%ls", default_reports);
     else {
         WCHAR abs[WFT_PATH_CCH];
@@ -87,26 +87,10 @@ int WftRun(HINSTANCE inst) {
         wft_wsnprintf(cfg.report_root, WFT_PATH_CCH, L"%ls", abs);
     }
 
-    /* The options a start-up entry must repeat (absolute --report-dir, never the one-shot commands). */
-    WCHAR run_args[2048];
-    if (!config_format_args(&cfg, run_args, sizeof run_args / sizeof run_args[0])) {
-        run_args[0] = 0;
-        log_msg("WARN", "options are too long to store in the Startup apps entry; it will start with defaults");
-    }
-
-    if (cfg.startup_action != STARTUP_NONE) {
-        bool add = cfg.startup_action == STARTUP_ADD;
-        bool ok = startup_set(add, run_args);
-        log_msg(ok ? "INFO" : "ERROR", "%s Startup apps entry %s", add ? "adding" : "removing", ok ? "succeeded" : "failed");
-        say(ok ? (add ? "WinFreezeTrace will start when you sign in (see Settings > Apps > Startup).\n" : "WinFreezeTrace removed from Startup apps.\n")
-               : "WinFreezeTrace: could not update the Startup apps entry.\n");
-        return ok ? 0 : 1;
-    }
-
     HANDLE singleton = CreateMutexW(NULL, TRUE, SINGLETON_NAME);
     if (!singleton || GetLastError() == ERROR_ALREADY_EXISTS) {
         log_msg("INFO", "another instance is already running in this session; exiting");
-        ui_ping_running_instance();                      /* its tray icon tells the user it is already running */
+        say("WinFreezeTrace is already running in this session.\n");
         if (singleton) CloseHandle(singleton);
         return 2;
     }
@@ -115,16 +99,19 @@ int WftRun(HINSTANCE inst) {
         log_msg_w("ERROR", "cannot create report folder %s; captures will fail until it exists", cfg.report_root);
 
     HANDLE stop = CreateEventW(NULL, TRUE, FALSE, NULL);
-    HANDLE wake = CreateEventW(NULL, FALSE, FALSE, NULL);          /* auto-reset: hotkey / on-off toggle */
+    HANDLE wake = CreateEventW(NULL, FALSE, FALSE, NULL);          /* auto-reset: hotkey / control pipe */
     SampleRing ring; int cap = config_ring_capacity(&cfg);
     Sample *lin = (Sample *)calloc((size_t)cap, sizeof(Sample));
     if (!stop || !wake || !lin || !ring_init(&ring, cap)) { log_msg("FATAL", "out of memory"); return 3; }
 
     PdhState pdh; metrics_init(&pdh);
-    UiOptions uo; memset(&uo, 0, sizeof uo);
-    uo.hotkey = cfg.hotkey; uo.tray = cfg.tray; uo.notify = cfg.notify; uo.reports_dir = cfg.report_root; uo.run_args = run_args;
-    bool ui_ok = ui_start(inst, stop, wake, &uo);
-    log_config(&cfg, &pdh, ui_ok);
+    ControlOptions co; memset(&co, 0, sizeof co);
+    co.reports_dir = cfg.report_root;
+    bool control_ok = control_start(stop, wake, &co);
+    HostOptions ho; memset(&ho, 0, sizeof ho);
+    ho.hotkey = cfg.hotkey;
+    bool host_ok = host_start(inst, stop, &ho);
+    log_config(&cfg, &pdh, host_ok, control_ok);
 
     TriggerConfig tc; trigger_config_default(&tc, cfg.stall_ms, cfg.hang_samples, cfg.cooldown_seconds);
     TriggerState ts; trigger_init(&ts);
@@ -134,13 +121,13 @@ int WftRun(HINSTANCE inst) {
     HANDLE waits[2] = { stop, wake };
 
     for (;;) {
-        if (ui_paused()) {                               /* switched off from the tray: no sampling, no probing, no triggers */
+        if (control_paused()) {                          /* switched off by the Manager: no sampling, no probing, no triggers */
             if (!was_paused) {
                 was_paused = true;
                 ring_reset(&ring);                       /* a gap would corrupt the baseline when monitoring resumes */
                 trigger_init(&ts);
             }
-            ui_take_manual(); ui_take_resume();
+            control_take_capture(); host_take_resume();
             if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) break;
             continue;
         }
@@ -155,7 +142,7 @@ int WftRun(HINSTANCE inst) {
             log_msg("INFO", "system slept for about %.0f s; treating the wake-up as a resume", slept / 1000.0);
             trigger_note_resume(&ts, &tc, wake_ms);
         }
-        if (ui_paused()) continue;                       /* toggled off during the wait */
+        if (control_paused()) continue;                  /* toggled off during the wait */
 
         Sample s; memset(&s, 0, sizeof s);
         plat_local_time(&s.ts);
@@ -165,8 +152,8 @@ int WftRun(HINSTANCE inst) {
         foreground_to_sample(&fi, &s);
         ring_push(&ring, &s);
 
-        if (ui_take_resume()) trigger_note_resume(&ts, &tc, wake_ms);
-        TriggerInput ti; ti.now_ms = wake_ms; ti.late_ms = late; ti.probe_status = fi.status; ti.manual = ui_take_manual();
+        if (host_take_resume()) trigger_note_resume(&ts, &tc, wake_ms);
+        TriggerInput ti; ti.now_ms = wake_ms; ti.late_ms = late; ti.probe_status = fi.status; ti.manual = control_take_capture();
         TriggerDecision d = trigger_evaluate(&ts, &tc, &ti);
 
         if (d.suppressed && wake_ms - last_suppress_log > 30000.0) {
@@ -177,17 +164,18 @@ int WftRun(HINSTANCE inst) {
             int n = ring_linearize(&ring, lin, cap);
             WCHAR dir[WFT_PATH_CCH]; dir[0] = 0;
             bool resumed_recently = wake_ms < ts.resume_until_ms;
-            ui_set_capturing(true);
+            control_set_capturing(true);
             bool ok = capture_run(&cfg, d.reason, lin, n, &fi, resumed_recently, dir, WFT_PATH_CCH);
-            ui_set_capturing(false);
+            control_set_capturing(false);
             if (!ok) log_msg("ERROR", "capture failed for trigger %s", trigger_name(d.reason));
-            ui_capture_done(dir, ok);
+            control_capture_done(dir, ok);
             trigger_note_capture(&ts, plat_qpc_ms());
         }
     }
 
     log_msg("INFO", "shutting down");
-    ui_stop();
+    host_stop();
+    control_stop();
     metrics_shutdown(&pdh);
     ring_free(&ring);
     free(lin);
