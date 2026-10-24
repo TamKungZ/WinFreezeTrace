@@ -13,6 +13,21 @@ double plat_qpc_ms(void) {
     return (double)q.QuadPart * 1000.0 / (double)g_qpf.QuadPart;
 }
 
+typedef BOOL (WINAPI *QueryUnbiasedInterruptTime_t)(PULONGLONG);
+
+double plat_unbiased_ms(void) {
+    static QueryUnbiasedInterruptTime_t fn = NULL;
+    static bool resolved = false;
+    if (!resolved) {
+        HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+        fn = k32 ? (QueryUnbiasedInterruptTime_t)(void *)GetProcAddress(k32, "QueryUnbiasedInterruptTime") : NULL;
+        resolved = true;
+    }
+    ULONGLONG t = 0;
+    if (!fn || !fn(&t)) return -1.0;
+    return (double)t / 10000.0;                  /* 100 ns units */
+}
+
 void plat_local_time(WftTime *t) {
     SYSTEMTIME st; GetLocalTime(&st);
     t->year = st.wYear; t->month = st.wMonth; t->day = st.wDay;
@@ -29,6 +44,12 @@ void plat_harden_process(void) {
     if (k32) {
         SetDefaultDllDirectories_t fn = (SetDefaultDllDirectories_t)(void *)GetProcAddress(k32, "SetDefaultDllDirectories");
         if (fn) fn(0x00000800 /* LOAD_LIBRARY_SEARCH_SYSTEM32 */);
+    }
+    /* Crisp tray menu and correct window geometry on high-DPI screens (the app has no manifest). */
+    HMODULE u32 = GetModuleHandleW(L"user32.dll");
+    if (u32) {
+        BOOL (WINAPI *set_aware)(void) = (BOOL (WINAPI *)(void))(void *)GetProcAddress(u32, "SetProcessDPIAware");
+        if (set_aware) set_aware();
     }
     HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);   /* no "insert disk" popups while enumerating drives */
@@ -65,6 +86,34 @@ DirResult plat_create_private_dir(const WCHAR *path) {
     }
     if (CreateDirectoryW(path, psa)) return DIR_CREATED;
     return GetLastError() == ERROR_ALREADY_EXISTS ? DIR_EXISTS : DIR_FAILED;
+}
+
+DirResult plat_create_private_dir_tree(const WCHAR *path) {
+    WCHAR tmp[WFT_PATH_CCH];
+    wft_wsnprintf(tmp, WFT_PATH_CCH, L"%ls", path);
+    size_t len = wcslen(tmp);
+    while (len > 3 && (tmp[len - 1] == L'\\' || tmp[len - 1] == L'/')) tmp[--len] = 0;      /* keep "C:\" intact */
+    DWORD attr = GetFileAttributesW(tmp);
+    if (attr != INVALID_FILE_ATTRIBUTES) return (attr & FILE_ATTRIBUTE_DIRECTORY) ? DIR_EXISTS : DIR_FAILED;
+    /* Create every missing parent with default security, longest existing prefix first. */
+    size_t start = 0;
+    if (tmp[0] == L'\\' && tmp[1] == L'\\') {                    /* UNC: skip \\server\share */
+        int slashes = 0;
+        for (size_t i = 2; tmp[i]; ++i) if (tmp[i] == L'\\' && ++slashes == 2) { start = i; break; }
+    } else if (tmp[1] == L':') start = 2;
+    for (size_t i = start + 1; i < len; ++i) {
+        if (tmp[i] != L'\\' && tmp[i] != L'/') continue;
+        tmp[i] = 0;
+        if (GetFileAttributesW(tmp) == INVALID_FILE_ATTRIBUTES) CreateDirectoryW(tmp, NULL);
+        tmp[i] = L'\\';
+    }
+    return plat_create_private_dir(tmp);
+}
+
+bool plat_exe_path(WCHAR *out, size_t cch) {
+    DWORD n = GetModuleFileNameW(NULL, out, (DWORD)cch);
+    if (n == 0 || n >= cch) { out[0] = 0; return false; }
+    return true;
 }
 
 void plat_default_paths(WCHAR *app_root, size_t app_cch, WCHAR *reports, size_t rep_cch) {
