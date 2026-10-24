@@ -68,6 +68,16 @@ static void test_strutil(void) {
     CHECK(wcscmp(wft_base_name(L"C:\\a\\b\\game.exe"), L"game.exe") == 0);
     CHECK(wft_wcs_icontains(L"Microsoft-Windows-WHEA-Logger", L"whea"));
     CHECK(!wft_wcs_icontains(L"abc", L"abcd"));
+
+    wchar_t qa[64];
+    CHECK(wft_quote_arg(L"plain", qa, 64) && wcscmp(qa, L"plain") == 0);
+    CHECK(wft_quote_arg(L"", qa, 64) && wcscmp(qa, L"\"\"") == 0);
+    CHECK(wft_quote_arg(L"D:\\my reports", qa, 64) && wcscmp(qa, L"\"D:\\my reports\"") == 0);
+    CHECK(wft_quote_arg(L"C:\\dir with space\\", qa, 64) && wcscmp(qa, L"\"C:\\dir with space\\\\\"") == 0);   /* trailing backslash doubled */
+    CHECK(wft_quote_arg(L"say \"hi\"", qa, 64) && wcscmp(qa, L"\"say \\\"hi\\\"\"") == 0);
+    CHECK(wft_quote_arg(L"a\\\"b c", qa, 64) && wcscmp(qa, L"\"a\\\\\\\"b c\"") == 0);                   /* backslash before a quote */
+    CHECK(!wft_quote_arg(L"this does not fit", qa, 8) && qa[0] == 0);
+    CHECK(!wft_quote_arg(L"abcdefgh", qa, 8));                                                      /* needs 9 */
 }
 
 static void test_config(void) {
@@ -97,6 +107,33 @@ static void test_config(void) {
     CHECK(config_ring_capacity(&c) == WFT_MAX_RING && c.warning_count == 1);
     config_defaults(&c); CHECK(config_ring_capacity(&c) == 180);
     CHECK(sizeof(Sample) * 180 < 1024 * 1024);                      /* README promise: < 1 MiB */
+
+    /* 0.5.0: tray and start-up options */
+    config_defaults(&c); CHECK(c.tray && c.notify && c.startup_action == STARTUP_NONE && !c.exit_running);
+    wchar_t *t1[] = { L"x", L"--no-tray", L"--no-notify" };
+    CHECK(config_parse(&c, 3, t1, err, sizeof err) == CLI_OK && !c.tray && !c.notify);
+    config_defaults(&c);
+    wchar_t *t2[] = { L"x", L"--add-startup", L"--redact" };
+    CHECK(config_parse(&c, 3, t2, err, sizeof err) == CLI_OK && c.startup_action == STARTUP_ADD && c.redact);
+    config_defaults(&c);
+    wchar_t *t3[] = { L"x", L"--remove-startup" };
+    CHECK(config_parse(&c, 2, t3, err, sizeof err) == CLI_OK && c.startup_action == STARTUP_REMOVE);
+    config_defaults(&c);
+    wchar_t *t4[] = { L"x", L"--add-startup", L"--remove-startup" };
+    CHECK(config_parse(&c, 3, t4, err, sizeof err) == CLI_ERROR && strstr(err, "combined"));
+    config_defaults(&c);
+    wchar_t *t5[] = { L"x", L"--exit" };
+    CHECK(config_parse(&c, 2, t5, err, sizeof err) == CLI_OK && c.exit_running);
+
+    /* the start-up entry must reproduce the configuration, never the one-shot commands */
+    wchar_t args[512];
+    config_defaults(&c); CHECK(config_format_args(&c, args, 512) && args[0] == 0);
+    wchar_t *t6[] = { L"x", L"--add-startup", L"--interval", L"2000", L"--no-dump", L"--redact", L"--no-tray", L"--report-dir", L"D:\\my reports" };
+    CHECK(config_parse(&c, 9, t6, err, sizeof err) == CLI_OK);
+    CHECK(config_format_args(&c, args, 512));
+    CHECK(wcscmp(args, L"--interval 2000 --no-dump --redact --no-tray --report-dir \"D:\\my reports\"") == 0);
+    CHECK(!config_format_args(&c, args, 20) && args[0] == 0);
+    CHECK(wcsstr(args, L"startup") == NULL);
 }
 
 static void test_ring(void) {
@@ -106,6 +143,8 @@ static void test_ring(void) {
     Sample out[8]; int n = ring_linearize(&r, out, 8);
     CHECK(n == 5 && out[0].wake_late_ms == 7 && out[4].wake_late_ms == 11);
     n = ring_linearize(&r, out, 3); CHECK(n == 3 && out[0].wake_late_ms == 9 && out[2].wake_late_ms == 11);
+    ring_reset(&r); CHECK(ring_linearize(&r, out, 8) == 0);                 /* pause/resume must not leave a gap in the history */
+    s.wake_late_ms = 42; ring_push(&r, &s); n = ring_linearize(&r, out, 8); CHECK(n == 1 && out[0].wake_late_ms == 42);
     ring_free(&r);
 }
 
@@ -162,9 +201,25 @@ static void test_trigger(void) {
     CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
 }
 
+static void test_late(void) {
+    double slept = -1;
+    CHECK(trigger_late_ms(1000.0, 1000.0, 1000, &slept) == 0 && slept == 0.0);
+    CHECK(trigger_late_ms(1250.0, 1250.0, 1000, &slept) == 250 && slept == 0.0);        /* a real stall: both clocks advance */
+    CHECK(trigger_late_ms(980.0, 980.0, 1000, &slept) == 0);                            /* early wake-up never goes negative */
+    /* 30 s of sleep (shorter than the 60 s gap heuristic) is removed, not reported as a stall */
+    CHECK(trigger_late_ms(31000.0, 1000.0, 1000, &slept) == 0 && slept == 30000.0);
+    /* ...but a stall that happens around it is still seen */
+    CHECK(trigger_late_ms(33800.0, 2000.0, 1000, &slept) == 1000 && slept == 31800.0);
+    CHECK(trigger_late_ms(5000.0, -1.0, 1000, &slept) == 4000 && slept == 0.0);         /* unbiased clock unavailable */
+    CHECK(trigger_late_ms(1500.0, 1000.0, 1000, &slept) == 500 && slept == 0.0);        /* under 1 s of difference is noise, not sleep */
+    CHECK(trigger_late_ms(1e15, 1000.0, 1000, &slept) >= 0);                            /* multi-week gap: no int overflow */
+    CHECK(trigger_late_ms(1e15, -1.0, 1000, NULL) == 2147483647);
+}
+
 static void test_events_and_retention(void) {
     CHECK(event_classify(L"Microsoft-Windows-WHEA-Logger", 18, 1, false) == EVC_WHEA_UNCORRECTED);
     CHECK(event_classify(L"Microsoft-Windows-WHEA-Logger", 17, 3, false) == EVC_WHEA_CORRECTED);
+    CHECK(event_classify(L"Microsoft-Windows-WHEA-Logger", 17, 0, false) == EVC_WHEA_CORRECTED);   /* unknown level is not "uncorrected" */
     CHECK(event_classify(L"Display", 4101, 3, false) == EVC_DISPLAY);
     CHECK(event_classify(L"nvlddmkm", 14, 2, false) == EVC_DISPLAY);
     CHECK(event_classify(L"disk", 153, 3, false) == EVC_STORAGE);
@@ -243,6 +298,10 @@ static void test_analysis(void) {
     in = base_in(a, 120, TRIGGER_MANUAL); analysis_run(&in, &r);
     CHECK(r.count == 1 && has_id(&r, "manual"));
 
+    in = base_in(a, 0, TRIGGER_MANUAL); analysis_run(&in, &r);                  /* empty timeline: no crash, one explanatory finding */
+    CHECK(r.count == 1 && has_id(&r, "no_data"));
+    in = base_in(a, 120, TRIGGER_MANUAL); analysis_run(&in, &r);
+
     FILE *f = tmpfile();
     analysis_write_findings_text(f, &r); analysis_write_metric_table(f, &r, 30);
     analysis_write_event_summary(f, &in.ev); analysis_write_findings_json(f, &r); analysis_write_metrics_json(f, &r);
@@ -251,7 +310,7 @@ static void test_analysis(void) {
 }
 
 int main(void) {
-    test_strutil(); test_config(); test_ring(); test_stats(); test_trigger(); test_events_and_retention(); test_analysis();
+    test_strutil(); test_config(); test_ring(); test_stats(); test_trigger(); test_late(); test_events_and_retention(); test_analysis();
     printf("%d checks, %d failed\n", g_run, g_fail);
     return g_fail ? 1 : 0;
 }
