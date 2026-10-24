@@ -17,6 +17,8 @@ void config_defaults(Config *c) {
     c->dump_timeout_ms = 15000;
     c->make_dump = true;
     c->hotkey = true;
+    c->tray = true;
+    c->notify = true;
 }
 
 static void warn(Config *c, const char *fmt, const char *name, uint32_t was, uint32_t now) {
@@ -68,6 +70,18 @@ CliResult config_parse(Config *c, int argc, wchar_t **argv, char *err, size_t er
         if (wft_wcs_ieq(name, L"--no-dump"))   { c->make_dump = false; continue; }
         if (wft_wcs_ieq(name, L"--redact"))    { c->redact = true; continue; }
         if (wft_wcs_ieq(name, L"--no-hotkey")) { c->hotkey = false; continue; }
+        if (wft_wcs_ieq(name, L"--no-tray"))   { c->tray = false; continue; }
+        if (wft_wcs_ieq(name, L"--no-notify")) { c->notify = false; continue; }
+        if (wft_wcs_ieq(name, L"--exit"))      { c->exit_running = true; continue; }
+        if (wft_wcs_ieq(name, L"--add-startup") || wft_wcs_ieq(name, L"--remove-startup")) {
+            int want = wft_wcs_ieq(name, L"--add-startup") ? STARTUP_ADD : STARTUP_REMOVE;
+            if (c->startup_action != STARTUP_NONE && c->startup_action != want) {
+                wft_snprintf(err, err_cch, "--add-startup and --remove-startup cannot be combined");
+                return CLI_ERROR;
+            }
+            c->startup_action = want;
+            continue;
+        }
         if (wft_wcs_ieq(name, L"--background")) continue;       /* accepted for compatibility (always true) */
 
         bool is_dir = wft_wcs_ieq(name, L"--report-dir");
@@ -110,6 +124,49 @@ CliResult config_parse(Config *c, int argc, wchar_t **argv, char *err, size_t er
     return CLI_OK;
 }
 
+static bool put_w(wchar_t *out, size_t cch, size_t *n, const wchar_t *text) {
+    size_t l = wcslen(text);
+    if (*n + l + 1 > cch) return false;
+    wmemcpy(out + *n, text, l);
+    *n += l;
+    out[*n] = 0;
+    return true;
+}
+
+bool config_format_args(const Config *c, wchar_t *out, size_t cch) {
+    if (!out || cch == 0) return false;
+    out[0] = 0;
+    Config d; config_defaults(&d);
+    size_t n = 0;
+    for (size_t k = 0; k < sizeof k_opts / sizeof k_opts[0]; ++k) {
+        uint32_t v = *(const uint32_t *)((const char *)c + k_opts[k].off);
+        uint32_t dv = *(const uint32_t *)((const char *)&d + k_opts[k].off);
+        if (v == dv) continue;
+        wchar_t item[64];
+        wft_wsnprintf(item, 64, L"%ls%ls %lu", n ? L" " : L"", k_opts[k].name, (unsigned long)v);
+        if (!put_w(out, cch, &n, item)) { out[0] = 0; return false; }
+    }
+    static const struct { const wchar_t *flag; size_t off; bool dflt; } flags[] = {
+        { L"--no-dump",   offsetof(Config, make_dump), true },
+        { L"--redact",    offsetof(Config, redact),    false },
+        { L"--no-hotkey", offsetof(Config, hotkey),    true },
+        { L"--no-tray",   offsetof(Config, tray),      true },
+        { L"--no-notify", offsetof(Config, notify),    true },
+    };
+    for (size_t k = 0; k < sizeof flags / sizeof flags[0]; ++k) {
+        bool v = *(const bool *)((const char *)c + flags[k].off);
+        if (v == flags[k].dflt) continue;
+        if (n && !put_w(out, cch, &n, L" ")) { out[0] = 0; return false; }
+        if (!put_w(out, cch, &n, flags[k].flag)) { out[0] = 0; return false; }
+    }
+    if (c->report_dir_set) {
+        wchar_t q[WFT_PATH_CCH + 8];
+        if (!wft_quote_arg(c->report_root, q, sizeof q / sizeof q[0])) { out[0] = 0; return false; }
+        if ((n && !put_w(out, cch, &n, L" ")) || !put_w(out, cch, &n, L"--report-dir ") || !put_w(out, cch, &n, q)) { out[0] = 0; return false; }
+    }
+    return true;
+}
+
 int config_ring_capacity(const Config *c) {
     uint64_t n = (uint64_t)c->history_seconds * 1000u / (c->interval_ms ? c->interval_ms : 1000u);
     if (n < 4) n = 4;
@@ -132,6 +189,14 @@ const char *config_usage(void) {
 "  --cooldown <s>           Gap between auto captures    (5..86400, default 60)\n"
 "  --no-hotkey              Do not register Ctrl+Alt+F12 (manual capture)\n"
 "\n"
+"Tray icon and start-up:\n"
+"  --no-tray                Run without the notification-area icon (no on/off or exit menu)\n"
+"  --no-notify              Never show balloon notifications from the tray icon\n"
+"  --add-startup            Add WinFreezeTrace to Windows Startup apps for this user (with the\n"
+"                           other options given here), then exit\n"
+"  --remove-startup         Remove it from Startup apps, then exit\n"
+"  --exit                   Ask the running instance in this session to quit, then exit\n"
+"\n"
 "Reports:\n"
 "  --report-dir <path>      Report root (default %LOCALAPPDATA%\\WinFreezeTrace\\reports)\n"
 "  --lead-window <s>        Seconds before the trigger treated as the lead-in (5..300, default 30)\n"
@@ -145,5 +210,6 @@ const char *config_usage(void) {
 "Other:\n"
 "  --help, --version\n"
 "\n"
-"Options also accept --name=value. Ctrl+Alt+F12 forces a capture.\n";
+"Options also accept --name=value. Ctrl+Alt+F12 forces a capture. The tray icon turns\n"
+"monitoring on/off (click) and offers Start with Windows, the reports folder and Exit (menu).\n";
 }
