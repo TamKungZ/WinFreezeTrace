@@ -12,6 +12,10 @@
   with the usual Windows status badges: green check = monitoring on, grey pause = monitoring off, orange ring = saving a report, red cross = recorder not running.
   "Recorder not running" has its own icon (`tray_stopped.ico`) instead of sharing the pause icon. The Dashboard and the navigation pane use the same colours.
 - All icon files contain 16, 20, 24, 32, 40, 48, 64, 128 and 256 px images, each rendered from the SVG at its own size.
+- **Separate icons for the installer and the uninstaller.** `Setup.exe` uses `assets/setup.ico` (green badge with a download arrow) and 
+  `Uninstall.exe` uses `assets/uninstall.ico` (red badge with a trash can). Both keep the window + snowflake artwork of the application icon, so the two 
+  programs can be told apart in Explorer, the taskbar and the Start Menu shortcut. Set through `MUI_ICON` / `MUI_UNICON` in `installer/WinFreezeTrace.nsi`;
+  sources are `assets/setup.svg` / `assets/uninstall.svg`. The Add/Remove Programs entry keeps the application icon.
 - **Manager UI/UX pass** (Windows 11 look and clearer wording):
   - Title bar merged into the window, DPI-aware start size that always fits the screen, window centred on first show.
   - Window material is selectable in Settings: **Acrylic** (blurred, see-through; the new default), Mica, Mica Alt or Solid. It falls back

@@ -61,6 +61,9 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 
 !define MUI_ABORTWARNING
+; Separate icons: Setup.exe (installer) and Uninstall.exe (uninstaller).
+!define MUI_ICON "${SRCDIR}\assets\setup.ico"
+!define MUI_UNICON "${SRCDIR}\assets\uninstall.ico"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${SRCDIR}\LICENSE"
 !insertmacro MUI_PAGE_COMPONENTS
