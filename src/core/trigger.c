@@ -18,6 +18,16 @@ const wchar_t *trigger_name_w(TriggerReason r) {
     }
 }
 
+int trigger_late_ms(double wall_ms, double awake_ms, uint32_t interval_ms, double *slept_ms) {
+    double slept = 0.0;
+    if (awake_ms >= 0.0 && wall_ms > awake_ms && wall_ms - awake_ms >= 1000.0) slept = wall_ms - awake_ms;
+    if (slept_ms) *slept_ms = slept;
+    double late = wall_ms - slept - (double)interval_ms;
+    if (late < 0.0) late = 0.0;
+    if (late > 2147483647.0) late = 2147483647.0;       /* a multi-week gap must not overflow the int */
+    return (int)late;
+}
+
 void trigger_config_default(TriggerConfig *c, uint32_t stall_ms, uint32_t hang_samples, uint32_t cooldown_s) {
     c->stall_ms = stall_ms;
     c->hang_samples = hang_samples;

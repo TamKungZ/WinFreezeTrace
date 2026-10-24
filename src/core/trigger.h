@@ -30,6 +30,12 @@ typedef struct TriggerDecision {
     const char   *suppressed;   /* non-NULL: a trigger fired but was ignored    */
 } TriggerDecision;
 
+/* Scheduler lateness of one watchdog wake-up, excluding time the machine spent asleep.
+ *   wall_ms   elapsed time on a clock that keeps running during sleep (QPC)
+ *   awake_ms  elapsed time on a clock that stops during sleep (unbiased interrupt time); < 0 = unknown
+ * *slept_ms receives the detected sleep duration (0 when none, or when it is under one second). */
+int  trigger_late_ms(double wall_ms, double awake_ms, uint32_t interval_ms, double *slept_ms);
+
 void trigger_config_default(TriggerConfig *c, uint32_t stall_ms, uint32_t hang_samples, uint32_t cooldown_s);
 void trigger_init(TriggerState *s);
 void trigger_note_resume(TriggerState *s, const TriggerConfig *c, double now_ms);
