@@ -3,6 +3,10 @@ Unicode true
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
+!include "Sections.nsh"
+!include "FileFunc.nsh"
+!insertmacro GetParameters
+!insertmacro GetOptions
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -22,6 +26,15 @@ Unicode true
 !ifndef DLL
   !define DLL "${SRCDIR}\build\Release\WinFreezeTraceCore.dll"
 !endif
+; Folder with the published WinFreezeTrace Manager (dotnet publish output). Leave it empty to build an installer
+; that has no Manager component (recorder only).
+!ifndef MGRDIR
+  !define MGRDIR ""
+!endif
+!if "${MGRDIR}" != ""
+  !define HAVE_MANAGER
+!endif
+!define MGR_EXE "WinFreezeTraceManager.exe"
 !ifndef OUTFILE
   !define OUTFILE "WinFreezeTrace-Setup-${VERSION}-${ARCH}.exe"
 !endif
@@ -58,15 +71,6 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-Function .onInit
-!if "${ARCH}" == "x64"
-  ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "This is the 64-bit build of ${APP}. Use the x86 installer on 32-bit Windows."
-    Abort
-  ${EndIf}
-  SetRegView 64
-!endif
-FunctionEnd
 
 Function un.onInit
 !if "${ARCH}" == "x64"
@@ -76,13 +80,17 @@ FunctionEnd
 
 Section "${APP} (required)" SecMain
   SectionIn RO
-  ; Upgrade: ask a running tray instance of this session to quit so its files can be replaced.
-  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +2
+  ; Upgrade: ask the running Manager and recorder of this session to quit so their files can be replaced.
+  IfFileExists "$INSTDIR\Manager\${MGR_EXE}" 0 +3
+    nsExec::Exec '"$INSTDIR\Manager\${MGR_EXE}" --exit'
+    Pop $0
+  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +3
     nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
-  Pop $0
+    Pop $0
   SetOutPath "$INSTDIR"
   File "${EXE}"
   File "${DLL}"
+  File "${SRCDIR}\assets\winfreezetrace.ico"
   File "${SRCDIR}\LICENSE"
   File "${SRCDIR}\README.md"
   File "${SRCDIR}\CHANGELOG.md"
@@ -98,7 +106,7 @@ Section "${APP} (required)" SecMain
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "TamKungZ"
-  WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\WinFreezeTrace.exe"
+  WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\winfreezetrace.ico"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "URLInfoAbout" "https://github.com/TamKungZ/WinFreezeTrace"
   WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -106,6 +114,15 @@ Section "${APP} (required)" SecMain
   WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair" 1
 SectionEnd
+
+!ifdef HAVE_MANAGER
+; Selected by default. It is a separate program: the recorder works without it (no tray icon, no window).
+Section "WinFreezeTrace Manager (tray icon and control window)" SecManager
+  SetOutPath "$INSTDIR\Manager"
+  File /r "${MGRDIR}\*.*"
+  SetOutPath "$INSTDIR"
+SectionEnd
+!endif
 
 Section "Add to system PATH (run `WinFreezeTrace` from any terminal)" SecPath
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\path.ps1" -Action add -Dir "$INSTDIR"'
@@ -119,23 +136,63 @@ Section "Add to system PATH (run `WinFreezeTrace` from any terminal)" SecPath
 SectionEnd
 
 Section /o "Start with Windows for all users (Startup apps)" SecStartup
+!ifdef HAVE_MANAGER
+  ${If} ${SectionIsSelected} ${SecManager}
+    ; The Manager starts hidden in the tray and then starts the recorder.
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager" '"$INSTDIR\Manager\${MGR_EXE}" --background'
+  ${Else}
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}" '"$INSTDIR\WinFreezeTrace.exe"'
+  ${EndIf}
+!else
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}" '"$INSTDIR\WinFreezeTrace.exe"'
+!endif
   WriteRegDWORD HKLM "Software\${APP}" "StartupAdded" 1
 SectionEnd
 
 Section "Start Menu shortcuts" SecShortcuts
   SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\${APP}"
-  CreateShortcut "$SMPROGRAMS\${APP}\${APP}.lnk" "$INSTDIR\WinFreezeTrace.exe"
+!ifdef HAVE_MANAGER
+  ${If} ${SectionIsSelected} ${SecManager}
+    CreateShortcut "$SMPROGRAMS\${APP}\${APP} Manager.lnk" "$INSTDIR\Manager\${MGR_EXE}" "" "$INSTDIR\winfreezetrace.ico"
+  ${Else}
+    CreateShortcut "$SMPROGRAMS\${APP}\${APP} (recorder, no window).lnk" "$INSTDIR\WinFreezeTrace.exe" "" "$INSTDIR\winfreezetrace.ico"
+  ${EndIf}
+!else
+  CreateShortcut "$SMPROGRAMS\${APP}\${APP} (recorder, no window).lnk" "$INSTDIR\WinFreezeTrace.exe" "" "$INSTDIR\winfreezetrace.ico"
+!endif
   CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-LangString DESC_Main ${LANG_ENGLISH} "The recorder (WinFreezeTrace.exe + WinFreezeTraceCore.dll), documentation and the optional logon-task scripts."
+; .onInit uses ${SecManager}, so it must come after the Section definitions.
+Function .onInit
+!if "${ARCH}" == "x64"
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "This is the 64-bit build of ${APP}. Use the x86 installer on 32-bit Windows."
+    Abort
+  ${EndIf}
+  SetRegView 64
+!endif
+!ifdef HAVE_MANAGER
+  ; Silent installs: /MANAGER=0 skips the Manager (it is installed by default).
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/MANAGER=" $R1
+  ${If} $R1 == "0"
+    !insertmacro UnselectSection ${SecManager}
+  ${EndIf}
+!endif
+FunctionEnd
+
+LangString DESC_Main ${LANG_ENGLISH} "The recorder (WinFreezeTrace.exe + WinFreezeTraceCore.dll), documentation and the optional logon-task scripts. It has no window or tray icon of its own."
+LangString DESC_Manager ${LANG_ENGLISH} "WinFreezeTrace Manager: a tray icon and control window to turn monitoring on/off, capture a report, browse reports and change settings. Optional: the recorder works without it."
 LangString DESC_Path ${LANG_ENGLISH} "Adds the install folder to the machine PATH so WinFreezeTrace can be called by name."
-LangString DESC_Startup ${LANG_ENGLISH} "Starts WinFreezeTrace (tray icon) when any user signs in. It then appears in Settings > Apps > Startup, where it can be switched off. Each user can also toggle it from the tray menu."
+LangString DESC_Startup ${LANG_ENGLISH} "Starts WinFreezeTrace when any user signs in (through the Manager if it is installed, otherwise the recorder alone). It then appears in Settings > Apps > Startup, where it can be switched off. Each user can also toggle it in the Manager's settings."
 LangString DESC_SM ${LANG_ENGLISH} "Start Menu entries for all users."
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} $(DESC_Main)
+!ifdef HAVE_MANAGER
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecManager} $(DESC_Manager)
+!endif
   !insertmacro MUI_DESCRIPTION_TEXT ${SecPath} $(DESC_Path)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} $(DESC_Startup)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecShortcuts} $(DESC_SM)
@@ -144,16 +201,21 @@ LangString DESC_SM ${LANG_ENGLISH} "Start Menu entries for all users."
 Section "Uninstall"
   SetShellVarContext all
 
-  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +2
+  IfFileExists "$INSTDIR\Manager\${MGR_EXE}" 0 +3
+    nsExec::Exec '"$INSTDIR\Manager\${MGR_EXE}" --exit'
+    Pop $0
+  IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +3
     nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
-  Pop $0
+    Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APP}"'
   Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /F /TN "${APP}"'
   Pop $0
 
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"   ; the installing user's tray setting
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"            ; 0.5.x entry of the installing user
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager"   ; the installing user's Manager setting
 
   ReadRegDWORD $1 HKLM "Software\${APP}" "PathAdded"
   ${If} $1 == 1
@@ -164,6 +226,8 @@ Section "Uninstall"
 
   Delete /REBOOTOK "$INSTDIR\WinFreezeTrace.exe"
   Delete /REBOOTOK "$INSTDIR\WinFreezeTraceCore.dll"
+  RMDir /r /REBOOTOK "$INSTDIR\Manager"
+  Delete "$INSTDIR\winfreezetrace.ico"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\CHANGELOG.md"
@@ -175,6 +239,8 @@ Section "Uninstall"
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${APP}\${APP}.lnk"
+  Delete "$SMPROGRAMS\${APP}\${APP} Manager.lnk"
+  Delete "$SMPROGRAMS\${APP}\${APP} (recorder, no window).lnk"
   Delete "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk"
   RMDir "$SMPROGRAMS\${APP}"
 
