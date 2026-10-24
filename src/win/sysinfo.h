@@ -11,6 +11,8 @@ void sysinfo_write_drives(const WCHAR *dir, DriveFacts *df);
 void sysinfo_write_drivers(const WCHAR *dir, const Config *cfg);
 void sysinfo_write_storage(const WCHAR *dir, const Config *cfg);
 void sysinfo_write_displays(const WCHAR *dir, const Config *cfg);
+/* startup_apps.csv: programs that start with Windows (Run keys, Startup folders) - a common cause of slow boots and stalls. */
+void sysinfo_write_startup(const WCHAR *dir, const Config *cfg);
 void sysinfo_write_power(const WCHAR *dir, PowerFacts *pf);
 
 #endif

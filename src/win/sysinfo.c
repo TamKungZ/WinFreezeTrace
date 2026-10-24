@@ -155,7 +155,7 @@ void sysinfo_write_drivers(const WCHAR *dir, const Config *cfg) {
                 }
             }
             bool ms = wft_wcs_icontains(company, L"Microsoft");
-            fprintf(f, "0x%p,", drivers[i]); wft_csv_text(f, name); fputc(',', f);
+            fprintf(f, "0x%llx,", (unsigned long long)(ULONG_PTR)drivers[i]); wft_csv_text(f, name); fputc(',', f);
             if (cfg->redact) wft_redact_user_path(full, WFT_PATH_CCH);
             wft_csv_text(f, full); fputc(',', f); wft_csv_text(f, company);
             fputc(',', f); wft_csv_text(f, ver); fprintf(f, ",%s,%s\r\n", date, company[0] ? (ms ? "no" : "yes") : "unknown");
@@ -244,7 +244,7 @@ void sysinfo_write_displays(const WCHAR *dir, const Config *cfg) {
             reg_str(HKEY_LOCAL_MACHINE, path, L"DriverDate", date, 64);
             reg_str(HKEY_LOCAL_MACHINE, path, L"MatchingDeviceId", mid, 256);
             ULONGLONG vram = 0; DWORD vs = sizeof vram;
-            RegGetValueW(HKEY_LOCAL_MACHINE, path, L"HardwareInformation.qwMemorySize", RRF_RT_REG_QWORD, NULL, &vram, &vs);
+            RegGetValueW(HKEY_LOCAL_MACHINE, path, L"HardwareInformation.qwMemorySize", RRF_RT_QWORD, NULL, &vram, &vs);
             wft_csv_text(f, sub); fputc(',', f); wft_csv_text(f, desc); fputc(',', f); wft_csv_text(f, prov); fputc(',', f);
             wft_csv_text(f, ver); fputc(',', f); wft_csv_text(f, date); fprintf(f, ",%llu,", (unsigned long long)(vram / (1024ull * 1024ull)));
             wft_csv_text(f, cfg->redact ? L"<redacted>" : mid); fputs("\r\n", f);
@@ -283,5 +283,67 @@ void sysinfo_write_power(const WCHAR *dir, PowerFacts *pf) {
         pf->min_passive_pct = t;
         fprintf(f, "Lowest passive limit: %s = %.0f%% (below 100%% means thermal throttling)\r\n", nm, t);
     }
+    fclose(f);
+}
+
+
+/* ---- programs that start with Windows ---- */
+
+static bool approved_disabled(HKEY root, const WCHAR *name) {
+    BYTE d[16] = {0}; DWORD sz = sizeof d;
+    if (RegGetValueW(root, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", name, RRF_RT_REG_BINARY, NULL, d, &sz) != ERROR_SUCCESS) return false;
+    return sz >= 1 && (d[0] & 1) != 0;       /* odd first byte = switched off in Task Manager / Settings */
+}
+
+static void startup_run_key(FILE *f, const Config *cfg, HKEY root, REGSAM view, const WCHAR *scope, const WCHAR *subkey, bool check_approved) {
+    HKEY k;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, &k) != ERROR_SUCCESS) return;
+    for (DWORD i = 0; i < 512; ++i) {
+        WCHAR name[256], data[1024]; DWORD nc = 256, dc = sizeof data - sizeof(WCHAR), type = 0;
+        LSTATUS r = RegEnumValueW(k, i, name, &nc, NULL, &type, (LPBYTE)data, &dc);
+        if (r == ERROR_NO_MORE_ITEMS) break;
+        if (r != ERROR_SUCCESS) continue;
+        if (type != REG_SZ && type != REG_EXPAND_SZ) continue;
+        data[dc / sizeof(WCHAR)] = 0;
+        if (cfg->redact) wft_redact_user_path(data, 1024);
+        wft_csv_text(f, scope); fputc(',', f); wft_csv_text(f, subkey); fputc(',', f);
+        wft_csv_text(f, name); fputc(',', f);
+        fputs(check_approved ? (approved_disabled(root, name) ? "disabled" : "enabled") : "enabled", f); fputc(',', f);
+        wft_csv_text(f, data); fputs("\r\n", f);
+    }
+    RegCloseKey(k);
+}
+
+static void startup_folder(FILE *f, const Config *cfg, int csidl, const WCHAR *scope) {
+    WCHAR dir[MAX_PATH], pat[MAX_PATH + 4];
+    if (FAILED(SHGetFolderPathW(NULL, csidl, NULL, SHGFP_TYPE_CURRENT, dir))) return;
+    wft_wsnprintf(pat, MAX_PATH + 4, L"%ls\\*", dir);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    int n = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (wft_wcs_ieq(fd.cFileName, L"desktop.ini")) continue;
+        WCHAR where[MAX_PATH]; wft_wsnprintf(where, MAX_PATH, L"%ls", dir);
+        if (cfg->redact) wft_redact_user_path(where, MAX_PATH);
+        wft_csv_text(f, scope); fputc(',', f); wft_csv_text(f, where); fputc(',', f);
+        wft_csv_text(f, fd.cFileName); fputs(",enabled,(shortcut or file in the Startup folder)\r\n", f);
+    } while (++n < 256 && FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+void sysinfo_write_startup(const WCHAR *dir, const Config *cfg) {
+    FILE *f = open_in(dir, L"startup_apps.csv"); if (!f) return;
+    fputs("scope,location,name,state,command\r\n", f);
+    static const WCHAR run[]  = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    static const WCHAR once[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
+    startup_run_key(f, cfg, HKEY_CURRENT_USER,  0,               L"current user",         run,  true);
+    startup_run_key(f, cfg, HKEY_CURRENT_USER,  0,               L"current user",         once, false);
+    startup_run_key(f, cfg, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, L"all users",            run,  false);
+    startup_run_key(f, cfg, HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY, L"all users (32-bit)",   run,  false);
+    startup_run_key(f, cfg, HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY, L"all users",            once, false);
+    startup_folder(f, cfg, CSIDL_STARTUP,        L"current user folder");
+    startup_folder(f, cfg, CSIDL_COMMON_STARTUP, L"all users folder");
     fclose(f);
 }
