@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+### Changed
+
+- **New application icon** (`WinFreezeTrace-icon-v7`): a snowflake on a blue window with a status badge. Replaces `assets/winfreezetrace.svg`,
+  `assets/winfreezetrace.ico` (installer, shortcuts, Add/Remove Programs), the Manager's `app.ico` and the 256 px `logo.png` shown on the About page.
+- The three tray icons (`tray_on.ico`, `tray_off.ico`, `tray_busy.ico`) were redrawn from the same artwork. The badge in the corner keeps the
+  old meaning: green check = monitoring, grey pause = off/paused, orange ring = busy/capturing.
+- All icon files contain 16, 20, 24, 32, 40, 48, 64, 128 and 256 px images, each rendered from the SVG at its own size.
+- Version bumped to 0.7.0 (`CMakeLists.txt`, `src/core/wft_types.h`, `src/version.rc`, Manager `.csproj`).
+
+### Verification status
+
+- Icons were rendered and inspected at 256 px and 16 px. They have **not** yet been seen on a real Windows tray, in the installer or in the
+  Manager's About page, and the Manager and installer were not rebuilt for this change.
+
 ## 0.6.0
 
 ### Changed (split: recorder + Manager)
