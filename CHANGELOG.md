@@ -17,6 +17,10 @@
   programs can be told apart in Explorer, the taskbar and the Start Menu shortcut. Set through `MUI_ICON` / `MUI_UNICON` in `installer/WinFreezeTrace.nsi`;
   sources are `assets/setup.svg` / `assets/uninstall.svg`. The Add/Remove Programs entry keeps the application icon.
 - **Terms of Use and Privacy Notice.** New `TERMS.txt` and `PRIVACY.txt` (what a report contains, memory-dump warning, redaction limits, where data is stored, no network use). The installer shows them as two extra pages after the license: Terms (must be accepted) and Privacy (Next only). Both are installed next to the program, removed by the uninstaller and included in the portable zip.
+- **Installer/uninstaller clean-up pass.** The uninstaller now also removes the Manager's per-user "Start with Windows" entry (and the matching Startup apps 
+  on/off flag) for every signed-in user instead of only the account that elevated it, removes the machine-wide Startup apps flag, waits for the Manager and 
+  recorder to quit before deleting files, and releases its working directory so the install folder itself is removed. The installer waits for the old 
+  processes on upgrade and records the installed size (`EstimatedSize`) for Settings > Apps.
 - **Manager UI/UX pass** (Windows 11 look and clearer wording):
   - Title bar merged into the window, DPI-aware start size that always fits the screen, window centred on first show.
   - Window material is selectable in Settings: **Acrylic** (blurred, see-through; the new default), Mica, Mica Alt or Solid. It falls back

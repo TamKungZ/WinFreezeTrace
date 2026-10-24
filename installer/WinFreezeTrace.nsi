@@ -7,6 +7,7 @@ Unicode true
 !include "FileFunc.nsh"
 !insertmacro GetParameters
 !insertmacro GetOptions
+!insertmacro GetSize
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -108,6 +109,9 @@ Section "${APP} (required)" SecMain
   IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +3
     nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
     Pop $0
+  ${If} ${FileExists} "$INSTDIR\WinFreezeTrace.exe"
+    Sleep 1500   ; give the old recorder/Manager time to quit so their files can be replaced
+  ${EndIf}
   SetOutPath "$INSTDIR"
   File "${EXE}"
   File "${DLL}"
@@ -128,7 +132,7 @@ Section "${APP} (required)" SecMain
   WriteRegStr HKLM "Software\${APP}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "TamKungZ_"
+  WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "TamKungZ"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\winfreezetrace.ico"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "URLInfoAbout" "https://github.com/TamKungZ/WinFreezeTrace"
@@ -187,6 +191,13 @@ Section "Start Menu shortcuts" SecShortcuts
   CreateShortcut "$SMPROGRAMS\${APP}\Uninstall ${APP}.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
+; Hidden: runs last and records the installed size for Settings > Apps.
+Section "-Post"
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKLM "${UNINST_KEY}" "EstimatedSize" $0
+SectionEnd
+
 ; .onInit uses ${SecManager}, so it must come after the Section definitions.
 Function .onInit
 !if "${ARCH}" == "x64"
@@ -230,6 +241,7 @@ Section "Uninstall"
   IfFileExists "$INSTDIR\WinFreezeTrace.exe" 0 +3
     nsExec::Exec '"$INSTDIR\WinFreezeTrace.exe" --exit'
     Pop $0
+  Sleep 1500   ; let the Manager and recorder finish quitting so their files can be deleted
   nsExec::Exec '"$SYSDIR\schtasks.exe" /End /TN "${APP}"'
   Pop $0
   nsExec::Exec '"$SYSDIR\schtasks.exe" /Delete /F /TN "${APP}"'
@@ -239,6 +251,25 @@ Section "Uninstall"
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"            ; 0.5.x entry of the installing user
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager"   ; the installing user's Manager setting
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${APP}"
+  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${APP} Manager"
+
+  ; The Manager's "Start with Windows" is a per-user Run entry. The uninstaller runs elevated and may be another account,
+  ; so also clean every user profile that is loaded (signed in). Profiles of users who are signed out are not loaded and
+  ; cannot be reached; their entry then points at a missing file and is harmless.
+  StrCpy $2 0
+  user_loop:
+    EnumRegKey $3 HKU "" $2
+    StrCmp $3 "" user_done
+    IntOp $2 $2 + 1
+    StrCpy $4 $3 8
+    StrCmp $4 "S-1-5-21" 0 user_loop
+    DeleteRegValue HKU "$3\Software\Microsoft\Windows\CurrentVersion\Run" "${APP}"
+    DeleteRegValue HKU "$3\Software\Microsoft\Windows\CurrentVersion\Run" "${APP} Manager"
+    DeleteRegValue HKU "$3\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${APP}"
+    DeleteRegValue HKU "$3\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "${APP} Manager"
+    Goto user_loop
+  user_done:
 
   ReadRegDWORD $1 HKLM "Software\${APP}" "PathAdded"
   ${If} $1 == 1
@@ -261,6 +292,7 @@ Section "Uninstall"
   Delete "$INSTDIR\register_task.ps1"
   Delete "$INSTDIR\path.ps1"
   Delete "$INSTDIR\Uninstall.exe"
+  SetOutPath "$TEMP"   ; the working directory cannot be removed, and it starts out as the install folder
   RMDir "$INSTDIR"
 
   Delete "$SMPROGRAMS\${APP}\${APP}.lnk"

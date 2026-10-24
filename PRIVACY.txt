@@ -61,6 +61,9 @@ Check a report yourself before sharing it. Redaction is off by default.
   deleted automatically. The limit can be changed.
 - Manager settings (appearance, start-up, report folder, recorder options):
   %LOCALAPPDATA%\WinFreezeTrace\manager.json for each Windows user.
+- Log files: winfreezetrace.log and manager.log (plus a .old copy) in the same
+  folder. They hold status and error messages, which can include file and folder
+  paths. Each file is capped at a few hundred KB and then rotated.
 - Installation records: the install folder under Program Files and the
   registry keys HKLM\Software\WinFreezeTrace and the Windows "Uninstall" entry.
   If you choose it, a start-up entry under the Windows "Run" key.
