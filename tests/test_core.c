@@ -108,32 +108,29 @@ static void test_config(void) {
     config_defaults(&c); CHECK(config_ring_capacity(&c) == 180);
     CHECK(sizeof(Sample) * 180 < 1024 * 1024);                      /* README promise: < 1 MiB */
 
-    /* 0.5.0: tray and start-up options */
-    config_defaults(&c); CHECK(c.tray && c.notify && c.startup_action == STARTUP_NONE && !c.exit_running);
-    wchar_t *t1[] = { L"x", L"--no-tray", L"--no-notify" };
-    CHECK(config_parse(&c, 3, t1, err, sizeof err) == CLI_OK && !c.tray && !c.notify);
+    /* 0.6.0: tray and start-up moved to WinFreezeTrace Manager */
+    config_defaults(&c); CHECK(!c.exit_running);
+    wchar_t *t1[] = { L"x", L"--no-tray", L"--no-notify", L"--background" };          /* old start-up entries must keep working */
+    CHECK(config_parse(&c, 4, t1, err, sizeof err) == CLI_OK);
     config_defaults(&c);
     wchar_t *t2[] = { L"x", L"--add-startup", L"--redact" };
-    CHECK(config_parse(&c, 3, t2, err, sizeof err) == CLI_OK && c.startup_action == STARTUP_ADD && c.redact);
+    CHECK(config_parse(&c, 3, t2, err, sizeof err) == CLI_ERROR && strstr(err, "Manager"));
     config_defaults(&c);
     wchar_t *t3[] = { L"x", L"--remove-startup" };
-    CHECK(config_parse(&c, 2, t3, err, sizeof err) == CLI_OK && c.startup_action == STARTUP_REMOVE);
-    config_defaults(&c);
-    wchar_t *t4[] = { L"x", L"--add-startup", L"--remove-startup" };
-    CHECK(config_parse(&c, 3, t4, err, sizeof err) == CLI_ERROR && strstr(err, "combined"));
+    CHECK(config_parse(&c, 2, t3, err, sizeof err) == CLI_ERROR && strstr(err, "Manager"));
     config_defaults(&c);
     wchar_t *t5[] = { L"x", L"--exit" };
     CHECK(config_parse(&c, 2, t5, err, sizeof err) == CLI_OK && c.exit_running);
 
-    /* the start-up entry must reproduce the configuration, never the one-shot commands */
+    /* the Manager reproduces the configuration from these arguments, never the one-shot commands */
     wchar_t args[512];
     config_defaults(&c); CHECK(config_format_args(&c, args, 512) && args[0] == 0);
-    wchar_t *t6[] = { L"x", L"--add-startup", L"--interval", L"2000", L"--no-dump", L"--redact", L"--no-tray", L"--report-dir", L"D:\\my reports" };
+    wchar_t *t6[] = { L"x", L"--exit", L"--interval", L"2000", L"--no-dump", L"--redact", L"--no-tray", L"--report-dir", L"D:\\my reports" };
     CHECK(config_parse(&c, 9, t6, err, sizeof err) == CLI_OK);
     CHECK(config_format_args(&c, args, 512));
-    CHECK(wcscmp(args, L"--interval 2000 --no-dump --redact --no-tray --report-dir \"D:\\my reports\"") == 0);
+    CHECK(wcscmp(args, L"--interval 2000 --no-dump --redact --report-dir \"D:\\my reports\"") == 0);
     CHECK(!config_format_args(&c, args, 20) && args[0] == 0);
-    CHECK(wcsstr(args, L"startup") == NULL);
+    CHECK(wcsstr(args, L"exit") == NULL);
 }
 
 static void test_ring(void) {
