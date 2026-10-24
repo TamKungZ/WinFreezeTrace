@@ -9,3 +9,8 @@ reports/
 *.obj
 *.pdb
 tests/test_core
+bin/
+obj/
+manager-out/
+dist/
+stage/

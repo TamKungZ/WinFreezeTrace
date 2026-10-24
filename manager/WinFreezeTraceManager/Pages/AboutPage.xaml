@@ -1,0 +1,41 @@
+<Page
+    x:Class="WinFreezeTraceManager.Pages.AboutPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer>
+        <StackPanel Padding="32,24,32,32" Spacing="16" MaxWidth="920" HorizontalAlignment="Left">
+            <TextBlock Text="About" Style="{StaticResource TitleTextBlockStyle}" />
+
+            <Border Style="{StaticResource Card}">
+                <Grid ColumnSpacing="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="Logo" Width="96" Height="96" VerticalAlignment="Top" />
+                    <StackPanel Grid.Column="1" Spacing="4">
+                        <TextBlock Text="WinFreezeTrace Manager" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <TextBlock x:Name="ManagerVersion" />
+                        <TextBlock x:Name="RecorderVersion" />
+                        <TextBlock Text="Control panel and tray icon for the WinFreezeTrace freeze and hang recorder. The recorder does the monitoring; this program only shows its state and sends it commands."
+                                   TextWrapping="Wrap" Margin="0,8,0,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="Licensed under 0BSD." Margin="0,4,0,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border Style="{StaticResource Card}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Files" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button Content="Open recorder log" Click="RecorderLog_Click" />
+                        <Button Content="Open Manager log" Click="ManagerLog_Click" />
+                        <Button Content="Open data folder" Click="DataFolder_Click" />
+                        <Button Content="Project page" Click="Project_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>
