@@ -65,7 +65,25 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_ICON "${SRCDIR}\assets\setup.ico"
 !define MUI_UNICON "${SRCDIR}\assets\uninstall.ico"
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_HEADER_TEXT "License"
+!define MUI_PAGE_HEADER_SUBTEXT "${APP} is free software released under the BSD Zero Clause License."
 !insertmacro MUI_PAGE_LICENSE "${SRCDIR}\LICENSE"
+
+; Terms of Use: must be accepted. Text comes from TERMS.txt (also installed next to the program).
+!define MUI_PAGE_HEADER_TEXT "Terms of Use"
+!define MUI_PAGE_HEADER_SUBTEXT "Please review the terms of use before installing ${APP}."
+!define MUI_LICENSEPAGE_TEXT_TOP "Press Page Down to see the rest of the terms."
+!define MUI_LICENSEPAGE_CHECKBOX
+!define MUI_LICENSEPAGE_CHECKBOX_TEXT "I have read and agree to the Terms of Use"
+!insertmacro MUI_PAGE_LICENSE "${SRCDIR}\TERMS.txt"
+
+; Privacy Notice: information only, nothing to accept. Text comes from PRIVACY.txt.
+!define MUI_PAGE_HEADER_TEXT "Privacy Notice"
+!define MUI_PAGE_HEADER_SUBTEXT "What ${APP} records and where it is stored."
+!define MUI_LICENSEPAGE_TEXT_TOP "Press Page Down to see the rest of the notice."
+!define MUI_LICENSEPAGE_TEXT_BOTTOM "${APP} does not send data over the network. Click Next to continue."
+!define MUI_LICENSEPAGE_BUTTON "$(^NextBtn)"
+!insertmacro MUI_PAGE_LICENSE "${SRCDIR}\PRIVACY.txt"
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -95,6 +113,8 @@ Section "${APP} (required)" SecMain
   File "${DLL}"
   File "${SRCDIR}\assets\winfreezetrace.ico"
   File "${SRCDIR}\LICENSE"
+  File "${SRCDIR}\TERMS.txt"
+  File "${SRCDIR}\PRIVACY.txt"
   File "${SRCDIR}\README.md"
   File "${SRCDIR}\CHANGELOG.md"
   File "${SRCDIR}\install_task.cmd"
@@ -232,6 +252,8 @@ Section "Uninstall"
   RMDir /r /REBOOTOK "$INSTDIR\Manager"
   Delete "$INSTDIR\winfreezetrace.ico"
   Delete "$INSTDIR\LICENSE"
+  Delete "$INSTDIR\TERMS.txt"
+  Delete "$INSTDIR\PRIVACY.txt"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\CHANGELOG.md"
   Delete "$INSTDIR\install_task.cmd"

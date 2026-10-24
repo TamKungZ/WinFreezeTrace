@@ -1,0 +1,88 @@
+WinFreezeTrace - Terms of Use
+=============================
+
+Version 0.7.0
+Publisher: TamKungZ (https://github.com/TamKungZ/WinFreezeTrace)
+
+Please read these terms before installing or using WinFreezeTrace (the
+recorder, "WinFreezeTrace.exe", and the optional WinFreezeTrace Manager). By
+installing or using the software you agree to them. If you do not agree, do
+not install or use it.
+
+1. License
+----------
+WinFreezeTrace is free software released under the BSD Zero Clause License
+(0BSD). The full text is in the file LICENSE, which is shown in the previous
+step of the installer and installed with the program. These terms do not
+reduce the rights that license gives you; they only add notes about how the
+software is meant to be used.
+
+2. What the software does
+-------------------------
+WinFreezeTrace runs in the background, keeps a short rolling history of system
+counters in memory, and writes a diagnostic report to your disk when it detects
+a system stall or an unresponsive foreground application, or when you press the
+capture hotkey (Ctrl+Alt+F12). The Manager is an optional tray icon and window
+to control it and to browse the reports.
+
+Reports can contain sensitive information. Section 1 of the Privacy Notice
+lists what is collected. You are responsible for deciding who may see your
+reports and for removing sensitive data before you share them.
+
+3. Permission to monitor
+------------------------
+Install and run WinFreezeTrace only on computers that you own or that you are
+authorized to administer. Installing it on a computer that belongs to someone
+else, or using it to monitor another person without their knowledge or consent,
+may be illegal where you live. You are solely responsible for complying with
+the laws, workplace policies and agreements that apply to you.
+
+4. Administrator rights
+-----------------------
+The installer needs administrator rights because it installs for all users. It
+writes to the program folder and to the machine-wide registry, and, only if you
+select them, it adds the install folder to the system PATH and registers
+WinFreezeTrace to start when any user signs in. The uninstaller reverses these
+changes.
+
+5. Limitations and no guarantee of results
+------------------------------------------
+- The findings in a report are heuristics: evidence to check, not proof of a
+  root cause. A report with few findings does not mean the system is healthy.
+- Short spikes, some application or GPU hangs, and hard system locks may go
+  undetected or may prevent a report from being written.
+- False positives and missed stalls are possible.
+- Capturing a report costs CPU and disk, and creating a memory dump may briefly
+  suspend the foreground process. Zero performance impact is not guaranteed.
+- Security or anti-cheat software may treat process inspection as suspicious.
+  Do not run WinFreezeTrace alongside software that forbids it, and check the
+  rules of any online game or service before using it there.
+
+6. Disclaimer of warranty
+-------------------------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. THE AUTHOR
+DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+7. Limitation of liability
+--------------------------
+TO THE FULLEST EXTENT PERMITTED BY LAW, THE AUTHOR IS NOT LIABLE FOR ANY
+DAMAGES, INCLUDING DIRECT, INDIRECT, SPECIAL OR CONSEQUENTIAL DAMAGES, LOSS OF
+DATA OR PROFITS, OR LOSS OF USE, ARISING OUT OF OR IN CONNECTION WITH THE USE
+OF, OR INABILITY TO USE, THE SOFTWARE, WHETHER IN CONTRACT, NEGLIGENCE OR
+OTHERWISE. This does not exclude liability that cannot be excluded by law.
+
+8. Third-party software
+-----------------------
+The Manager is built with .NET and the Windows App SDK / WinUI 3, which are
+provided by Microsoft under their own licenses. WinFreezeTrace is an
+independent project and is not affiliated with or endorsed by Microsoft.
+
+9. Changes
+----------
+These terms may change in later versions. The terms that apply to you are the
+ones installed with the version you use (TERMS.txt in the install folder).
+
+10. Contact
+-----------
+Questions and bug reports: https://github.com/TamKungZ/WinFreezeTrace

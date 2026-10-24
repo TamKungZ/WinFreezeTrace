@@ -100,7 +100,7 @@ jobs:
         run: |
           $stage = "stage"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item build/Release/WinFreezeTrace.exe, build/Release/WinFreezeTraceCore.dll, LICENSE, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
+          Copy-Item build/Release/WinFreezeTrace.exe, build/Release/WinFreezeTraceCore.dll, LICENSE, TERMS.txt, PRIVACY.txt, README.md, CHANGELOG.md, install_task.cmd, uninstall_task.cmd, register_task.ps1 $stage
           Copy-Item manager-out (Join-Path $stage 'Manager') -Recurse
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-${{ matrix.arch }}.zip" -Force
 

@@ -5,3 +5,6 @@
 *.ps1 text eol=crlf
 *.rc  text eol=crlf
 *.sh  text eol=lf
+# Shown in the installer (plain text, Windows line endings).
+TERMS.txt text eol=crlf
+PRIVACY.txt text eol=crlf

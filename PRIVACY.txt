@@ -1,0 +1,100 @@
+WinFreezeTrace - Privacy Notice
+===============================
+
+Version 0.7.0
+Publisher: TamKungZ (https://github.com/TamKungZ/WinFreezeTrace)
+
+Short version: WinFreezeTrace works entirely on your computer. It has no
+account, no telemetry and no analytics, and it does not upload your reports or
+any other data. Everything it records stays on your disk until you delete it or
+share it yourself.
+
+1. What WinFreezeTrace records
+------------------------------
+While it runs, the recorder keeps a rolling history (about 3 minutes by default)
+of system counters in memory only. Nothing from this history is written to disk
+unless a report is captured.
+
+When a report is captured (automatic trigger or hotkey), it is written to a new
+folder and can contain:
+
+- summary.txt and summary.json: findings, trigger, times, capture cost.
+- timeline.csv: CPU, memory, disk and similar counters before the trigger.
+- foreground.txt: the program in the foreground (name, path, process ID,
+  elevation, uptime, window position and size, memory and I/O use) and, unless
+  redaction is on, its window title.
+- processes.csv and threads.csv: all running processes with their CPU/I-O rates,
+  and the threads of the foreground process.
+- waitchains.txt and modules.csv: what the foreground program's threads were
+  waiting on, and the DLLs loaded in it.
+- events_digest.csv and events_*.xml: relevant Windows Event Log records, which
+  can include user names, computer name, file paths and application messages.
+- system_info.txt, power.txt, drives.csv, storage_devices.csv,
+  loaded_drivers.csv, displays.csv, display_drivers.csv, startup_apps.csv:
+  Windows build, hardware model, BIOS, disk models, serial numbers and
+  firmware, drivers, display adapters, power plan, startup entries, and the
+  computer and user names.
+- target.dmp: a memory dump of the foreground program, when allowed. See 2.
+
+Reports are not encrypted. Anyone who can read the report folder can read them.
+
+2. Memory dumps need special care
+---------------------------------
+target.dmp is created by default (turn it off with --no-dump or in the Manager's
+settings). A dump is a copy of the program's memory at that moment and can
+contain anything that program held, such as documents, messages, passwords,
+tokens or keys. The redaction option does NOT remove information from
+target.dmp. Do not share a dump unless you trust the recipient, or turn the dump
+off.
+
+3. Redaction
+------------
+With "--redact" (or the matching Manager setting) reports mask user and computer
+names, serial numbers, window titles and user folders in paths, and leave out
+the raw Event Log XML. Redaction is a best-effort filter, not a guarantee.
+Check a report yourself before sharing it. Redaction is off by default.
+
+4. Where data is stored
+-----------------------
+- Reports: %LOCALAPPDATA%\WinFreezeTrace\reports\ by default, or the folder you
+  choose. The newest 50 report folders are kept by default; older ones are
+  deleted automatically. The limit can be changed.
+- Manager settings (appearance, start-up, report folder, recorder options):
+  %LOCALAPPDATA%\WinFreezeTrace\manager.json for each Windows user.
+- Installation records: the install folder under Program Files and the
+  registry keys HKLM\Software\WinFreezeTrace and the Windows "Uninstall" entry.
+  If you choose it, a start-up entry under the Windows "Run" key.
+
+The Manager talks to the recorder through a local named pipe that only the
+current user and the system can open and that is not reachable over a network.
+
+5. Network use
+--------------
+WinFreezeTrace does not send data over the network, does not check for updates
+and does not contact any server. The only network-related action is the
+"Project" link on the Manager's About page, which opens
+https://github.com/TamKungZ/WinFreezeTrace in your web browser when you click it.
+That visit is handled by your browser and by GitHub under GitHub's own privacy
+policy.
+
+6. Sharing and removal
+----------------------
+The author receives nothing from your computer. If you send a report to someone
+(for example when filing a bug), that is your choice, and you should remove or
+redact what you do not want to share.
+
+Uninstalling WinFreezeTrace removes the program, its shortcuts, registry
+entries and PATH entry. It does NOT delete your reports or Manager settings in
+%LOCALAPPDATA%\WinFreezeTrace. Delete that folder yourself if you want them
+gone (for every Windows user who used the program).
+
+7. Children
+-----------
+WinFreezeTrace is a diagnostic tool for system administrators and advanced
+users and is not directed at children.
+
+8. Changes and contact
+----------------------
+This notice may change in later versions; the copy installed with your version
+(PRIVACY.txt in the install folder) applies to it. Questions:
+https://github.com/TamKungZ/WinFreezeTrace
