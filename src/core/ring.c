@@ -25,6 +25,11 @@ void ring_push(SampleRing *r, const Sample *s) {
     if (r->count < r->cap) ++r->count;
 }
 
+void ring_reset(SampleRing *r) {
+    r->head = 0;
+    r->count = 0;
+}
+
 int ring_linearize(const SampleRing *r, Sample *out, int out_cap) {
     if (!r->buf || !out) return 0;
     int n = r->count < out_cap ? r->count : out_cap;
