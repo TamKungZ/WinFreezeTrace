@@ -2,7 +2,7 @@ WinFreezeTrace - Terms of Use
 =============================
 
 Version 0.7.0
-Publisher: TamKungZ (https://github.com/TamKungZ/WinFreezeTrace)
+Publisher: TamKungZ_ (https://github.com/TamKungZ/WinFreezeTrace)
 
 Please read these terms before installing or using WinFreezeTrace (the
 recorder, "WinFreezeTrace.exe", and the optional WinFreezeTrace Manager). By

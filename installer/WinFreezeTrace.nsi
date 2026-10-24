@@ -128,7 +128,7 @@ Section "${APP} (required)" SecMain
   WriteRegStr HKLM "Software\${APP}" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "TamKungZ"
+  WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "TamKungZ_"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\winfreezetrace.ico"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "${UNINST_KEY}" "URLInfoAbout" "https://github.com/TamKungZ/WinFreezeTrace"

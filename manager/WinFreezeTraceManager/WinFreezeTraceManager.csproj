@@ -10,7 +10,7 @@
     <Product>WinFreezeTrace Manager</Product>
     <AssemblyTitle>WinFreezeTrace Manager</AssemblyTitle>
     <Description>Tray icon and control panel for the WinFreezeTrace recorder</Description>
-    <Company>TamKungZ</Company>
+    <Company>TamKungZ_</Company>
     <Version>0.7.0</Version>
     <Platforms>x86;x64;ARM64</Platforms>
     <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>

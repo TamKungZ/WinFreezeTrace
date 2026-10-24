@@ -2,7 +2,7 @@ WinFreezeTrace - Privacy Notice
 ===============================
 
 Version 0.7.0
-Publisher: TamKungZ (https://github.com/TamKungZ/WinFreezeTrace)
+Publisher: TamKungZ_ (https://github.com/TamKungZ/WinFreezeTrace)
 
 Short version: WinFreezeTrace works entirely on your computer. It has no
 account, no telemetry and no analytics, and it does not upload your reports or
