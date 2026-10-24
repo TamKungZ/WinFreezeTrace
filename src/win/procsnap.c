@@ -45,6 +45,7 @@ void procsnap_finish(ProcSnap *ps, DWORD fg_pid) {
     double cores = si.dwNumberOfProcessors ? (double)si.dwNumberOfProcessors : 1.0;
     double window_ms = plat_qpc_ms() - ps->base_ms;
     if (window_ms < 1.0) window_ms = 1.0;
+    ps->base_ms = window_ms;      /* from here on (also on the early-return paths): the measured window length */
     int cap = 512; ps->rows = (ProcRow *)calloc((size_t)cap, sizeof(ProcRow));
     if (!ps->rows) return;
     FILETIME nowft; GetSystemTimeAsFileTime(&nowft); ULONGLONG now100 = ft64(nowft);
@@ -105,7 +106,6 @@ void procsnap_finish(ProcSnap *ps, DWORD fg_pid) {
     }
     CloseHandle(snap);
     qsort(ps->rows, (size_t)ps->row_n, sizeof(ProcRow), cmp_cpu);
-    ps->base_ms = window_ms;      /* from here on: the measured window length */
 }
 
 bool procsnap_write_csv(const WCHAR *dir, const ProcSnap *ps, const Config *cfg) {
