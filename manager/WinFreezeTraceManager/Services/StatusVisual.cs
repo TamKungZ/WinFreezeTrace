@@ -13,13 +13,13 @@ internal static class StatusVisual
         s.Paused ? RecorderPhase.Off :
         RecorderPhase.On;
 
-    // Same colours as the tray icon badges: green = on, grey = off, orange = busy.
+    // Same colours as the tray icon badges: green = on, grey = off, orange = busy, red = recorder not running.
     public static Color ColorOf(RecorderPhase p) => p switch
     {
-        RecorderPhase.On => Color.FromArgb(255, 46, 160, 80),
+        RecorderPhase.On => Color.FromArgb(255, 16, 124, 16),
         RecorderPhase.Busy => Color.FromArgb(255, 232, 137, 12),
-        RecorderPhase.Off => Color.FromArgb(255, 122, 128, 138),
-        _ => Color.FromArgb(255, 150, 150, 150),
+        RecorderPhase.Off => Color.FromArgb(255, 107, 111, 118),
+        _ => Color.FromArgb(255, 196, 43, 28),
     };
 
     // Segoe Fluent Icons: CheckMark, Sync, Pause, Stop.

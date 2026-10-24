@@ -123,7 +123,7 @@ internal sealed class TrayIcon : IDisposable
         _hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, _className, "WinFreezeTrace Manager tray", WS_POPUP, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, _hInstance, IntPtr.Zero);
 
         int size = Math.Clamp(GetSystemMetrics(SM_CXSMICON), 16, 64);
-        string[] files = { "tray_on.ico", "tray_off.ico", "tray_busy.ico", "tray_off.ico" };
+        string[] files = { "tray_on.ico", "tray_off.ico", "tray_busy.ico", "tray_stopped.ico" };
         for (int i = 0; i < files.Length; i++)
             _icons[i] = LoadImageW(IntPtr.Zero, AppPaths.AssetPath(files[i]), IMAGE_ICON, size, size, LR_LOADFROMFILE);
         Add();

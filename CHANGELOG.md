@@ -8,6 +8,9 @@
   `assets/winfreezetrace.ico` (installer, shortcuts, Add/Remove Programs), the Manager's `app.ico` and the 256 px `logo.png` shown on the About page.
 - The three tray icons (`tray_on.ico`, `tray_off.ico`, `tray_busy.ico`) were redrawn from the same artwork. The badge in the corner keeps the
   old meaning: green check = monitoring, grey pause = off/paused, orange ring = busy/capturing.
+- **Tray icons redrawn in the Windows (Fluent) style** so they sit naturally among other notification-area icons: a flat, bold snowflake (the window frame was too detailed at 16 px)
+  with the usual Windows status badges: green check = monitoring on, grey pause = monitoring off, orange ring = saving a report, red cross = recorder not running.
+  "Recorder not running" has its own icon (`tray_stopped.ico`) instead of sharing the pause icon. The Dashboard and the navigation pane use the same colours.
 - All icon files contain 16, 20, 24, 32, 40, 48, 64, 128 and 256 px images, each rendered from the SVG at its own size.
 - **Manager UI/UX pass** (Windows 11 look and clearer wording):
   - Title bar merged into the window, DPI-aware start size that always fits the screen, window centred on first show.
