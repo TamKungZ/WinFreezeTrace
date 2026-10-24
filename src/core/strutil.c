@@ -192,3 +192,39 @@ void wft_ascii_from_wide(char *dst, size_t cch, const wchar_t *src) {
         dst[i] = (src[i] >= 0x20 && src[i] < 0x7F) ? (char)src[i] : '?';
     dst[i] = 0;
 }
+
+bool wft_quote_arg(const wchar_t *arg, wchar_t *dst, size_t cch) {
+    if (!dst || cch == 0) return false;
+    dst[0] = 0;
+    if (!arg) arg = L"";
+    bool plain = arg[0] != 0;
+    for (const wchar_t *p = arg; *p && plain; ++p)
+        if (*p == L' ' || *p == L'\t' || *p == L'\n' || *p == L'\v' || *p == L'"') plain = false;
+    size_t n = 0;
+#define PUT(ch) do { if (n + 1 >= cch) { dst[0] = 0; return false; } dst[n++] = (ch); } while (0)
+    if (plain) {
+        for (const wchar_t *p = arg; *p; ++p) PUT(*p);
+        dst[n] = 0;
+        return true;
+    }
+    PUT(L'"');
+    for (const wchar_t *p = arg;; ++p) {
+        size_t slashes = 0;
+        while (*p == L'\\') { ++slashes; ++p; }
+        if (*p == 0) {                         /* backslashes before the closing quote must be doubled */
+            for (size_t k = 0; k < slashes * 2; ++k) PUT(L'\\');
+            break;
+        }
+        if (*p == L'"') {                      /* backslashes before a literal quote are doubled, then the quote is escaped */
+            for (size_t k = 0; k < slashes * 2 + 1; ++k) PUT(L'\\');
+            PUT(L'"');
+        } else {
+            for (size_t k = 0; k < slashes; ++k) PUT(L'\\');
+            PUT(*p);
+        }
+    }
+    PUT(L'"');
+#undef PUT
+    dst[n] = 0;
+    return true;
+}

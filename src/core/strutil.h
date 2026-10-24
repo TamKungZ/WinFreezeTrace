@@ -39,6 +39,10 @@ bool wft_wcs_ieq(const wchar_t *a, const wchar_t *b);
 /* C:\Users\alice\x -> C:\Users\<user>\x (bounded). */
 void wft_redact_user_path(wchar_t *path, size_t cch);
 
+/* Quote one argument so CommandLineToArgvW / the MSVCRT parser reads it back unchanged.
+ * Returns false (and leaves dst terminated) when it does not fit. */
+bool wft_quote_arg(const wchar_t *arg, wchar_t *dst, size_t cch);
+
 /* ASCII-only copy for device strings; non-ASCII becomes '?'. */
 void wft_ascii_from_wide(char *dst, size_t cch, const wchar_t *src);
 
