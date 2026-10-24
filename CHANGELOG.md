@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.5.0
+
+### Verification status
+
+- Core: **120 assertions** in `tests/test_core.c` pass natively under AddressSanitizer/UBSan; the same suite passes (121) as a
+  Windows PE under Wine.
+- Windows layer: now **compiles without warnings with MinGW-w64 for x64 and x86** (0.4.0 did not build with MinGW at all, see
+  below). Under Wine the app was exercised end to end: start-up entry, nested `--report-dir`, single instance, `--exit`,
+  tray on/off, hotkey capture and report writing. Wine lacks the Event Log API, PDH counters and real wait chains, so
+  those paths, the real tray rendering and the MSVC build still need a pass on genuine Windows.
+
+### Added
+
+- **Tray icon** (generated at run time, no resource files): click = monitoring on/off, right-click = menu with status,
+  on/off, *Start with Windows*, *Open reports folder* and *Exit*. Icon shows on (green), off (grey) and writing a report
+  (orange); a balloon announces a saved report and opens the folder when clicked. The icon is restored if Explorer
+  restarts. While off there is no sampling, probing or capturing, and the history is discarded.
+- **Start with Windows**: per-user entry in Settings > Apps > Startup (honours the Task Manager enable/disable switch).
+  CLI: `--add-startup`, `--remove-startup` (they store the other options, with an absolute `--report-dir`).
+  The installer gains an optional all-users entry.
+- `--exit` (quit the running instance of this session), `--no-tray`, `--no-notify`.
+- A second launch now makes the running instance show an "already running" balloon instead of exiting silently.
+- `startup_apps.csv` in every report: Run/RunOnce keys and Startup folders, with their enabled/disabled state.
+- Build fails at configure time if `CMakeLists.txt`, `wft_types.h` and `version.rc` disagree on the version.
+
+### Fixed
+
+- **MinGW build was broken**: `WCT_MAX_NODE_COUNT`, `WCTP_GETINFO_ALL_FLAGS`, `WctSocketIoType` and `WctSmbIoType` are not in
+  MinGW's `wct.h`. Guarded fallbacks added; also a signed/unsigned PDH status comparison.
+- Removed `src/main.c`: an outdated, unbuilt duplicate of `engine.c`.
+- **Event ages were measured from the end of the capture**, not from the trigger. The minidump can take up to 15 s, so
+  `events_digest.csv` and the "near the trigger" weighting were skewed by that amount. The trigger time is now taken first.
+- `--report-dir` with missing parent folders made every capture fail; parents are now created (only the leaf is private).
+- A manual capture waited for the next sampling tick (up to `--interval`, e.g. 60 s). The loop now wakes immediately.
+- The hotkey/UI thread ran at below-normal priority, so it could be starved exactly when the system is under load.
+- Sleep detection relied only on a power broadcast. A second clock that stops during sleep (`QueryUnbiasedInterruptTime`)
+  now removes sleep time from the lateness, so a short sleep or Modern Standby can no longer be reported as a stall.
+  A multi-week gap can no longer overflow the 32-bit lateness value.
+- Process-snapshot window length was left as a raw timestamp on the failure path (bogus "window" in `summary.txt`).
+- Module snapshot now retries on `ERROR_BAD_LENGTH`; `%p` replaced by explicit hex (it printed `0x` twice on some runtimes);
+  VRAM size is also read when stored as 8-byte `REG_BINARY`.
+- A WHEA event with an unknown level was classified as *uncorrected*; an empty timeline no longer indexes `s[-1]`.
+- The process now declares itself DPI-aware (sharp menu, correct window geometry).
+- Scripts: `README` claimed there was no `LICENSE`; `install_task.cmd` hard-coded the version and now asks a running
+  instance to exit cleanly before killing it; `uninstall_task.cmd` removes the Startup entry.
+
 ## 0.4.0
 
 ### Verification status (read this first)

@@ -13,6 +13,34 @@ WinFreezeTrace.exe --help
 
 Default manual capture hotkey: `Ctrl+Alt+F12`.
 
+### Tray icon
+
+While running, WinFreezeTrace shows an icon in the notification area (click `^` if Windows hides it):
+
+| Icon | Meaning |
+| --- | --- |
+| Green check | Monitoring is **on** |
+| Grey pause bars | Monitoring is **off**: no sampling, no probing, no captures, no hotkey |
+| Orange dot | A report is being written |
+
+- **Left-click** the icon to turn monitoring on or off (a double-click toggles only once).
+- **Right-click** for the menu: current status, *Turn monitoring ON/OFF*, *Start with Windows*, *Open reports folder*, *Exit*.
+- After a capture a balloon appears; click it to open the report folder.
+- Turning monitoring off discards the in-memory history, so the baseline in the next report never spans the gap.
+- `--no-tray` runs without the icon, `--no-notify` suppresses balloons. A second launch just tells the running copy to show a "already running" balloon.
+
+### Start with Windows
+
+Use *Start with Windows* in the tray menu, or from a terminal:
+
+```bat
+WinFreezeTrace.exe --add-startup --interval 2000
+WinFreezeTrace.exe --remove-startup
+WinFreezeTrace.exe --exit
+```
+
+This adds a per-user entry that appears under **Settings > Apps > Startup** (and Task Manager > Startup), where it can also be switched off; the other options you pass are stored with it. `--exit` asks the running copy of this session to quit. `install_task.cmd` is an alternative that registers a scheduled task with automatic restart; having both is harmless because only one instance runs per session. The installer has an optional "Start with Windows for all users" component.
+
 For lower capture impact and no process dump:
 
 ```bat
@@ -33,7 +61,7 @@ Automatic captures have a 60-second cooldown. Sleep gaps and stalls shortly afte
 
 Reports are saved under `%LOCALAPPDATA%\WinFreezeTrace\reports\` by default; set `--report-dir` to change the root.
 
-Start with `summary.txt` for ranked findings, evidence, and next steps. Use `timeline.csv` for pre-trigger history and the other files for process, thread, wait-chain, Event Log, driver, storage, display, power, and system details. Process CPU/I/O rates in the report are measured just after the trigger, not before it.
+Start with `summary.txt` for ranked findings, evidence, and next steps. Use `timeline.csv` for pre-trigger history and the other files for process, thread, wait-chain, Event Log, driver, storage, display, power, startup-program (`startup_apps.csv`), and system details. Process CPU/I/O rates in the report are measured just after the trigger, not before it.
 
 Use `--redact` before sharing reports. It masks common identifying fields and omits raw Event XML, but **does not redact `target.dmp`**; add `--no-dump` to avoid creating that file. Reports and dumps may contain sensitive system and process data.
 
@@ -69,4 +97,4 @@ Core tests on supported platforms:
 ./tests/run.sh
 ```
 
-See `CHANGELOG.md` for release-specific changes. No `LICENSE` file is included yet.
+See `CHANGELOG.md` for release-specific changes. Licensed under 0BSD (see `LICENSE`).

@@ -1,7 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
-project(WinFreezeTrace VERSION 0.4.0 LANGUAGES C)
+project(WinFreezeTrace VERSION 0.5.0 LANGUAGES C)
+
+# One version everywhere: fail the configure step instead of shipping mismatched numbers.
+file(STRINGS src/core/wft_types.h _wft_hdr_ver REGEX "^#define WFT_VERSION")
+if(NOT _wft_hdr_ver MATCHES "\"${PROJECT_VERSION}\"")
+  message(FATAL_ERROR "WFT_VERSION in src/core/wft_types.h (${_wft_hdr_ver}) does not match project VERSION ${PROJECT_VERSION}")
+endif()
+string(REPLACE "." "," _wft_rc_ver "${PROJECT_VERSION}")
+file(STRINGS src/version.rc _wft_rc_lines REGEX "FILEVERSION|ProductVersion|FileVersion")
+foreach(_l IN LISTS _wft_rc_lines)
+  if(NOT (_l MATCHES "${PROJECT_VERSION}" OR _l MATCHES "${_wft_rc_ver},0"))
+    message(FATAL_ERROR "src/version.rc is out of date (${PROJECT_VERSION} expected): ${_l}")
+  endif()
+endforeach()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -41,6 +54,7 @@ if(WIN32)
     src/win/metrics.c
     src/win/foreground.c
     src/win/ui.c
+    src/win/startup.c
     src/win/procsnap.c
     src/win/threadinfo.c
     src/win/dump.c
@@ -51,7 +65,7 @@ if(WIN32)
   set_target_properties(WinFreezeTraceCore PROPERTIES PREFIX "")
   target_include_directories(WinFreezeTraceCore PRIVATE src src/core)
   target_compile_definitions(WinFreezeTraceCore PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601 WFT_BUILDING_DLL WFT_RC_DLL)
-  target_link_libraries(WinFreezeTraceCore PRIVATE wft_core user32 psapi pdh wevtapi advapi32 dbghelp shell32 powrprof version)
+  target_link_libraries(WinFreezeTraceCore PRIVATE wft_core user32 psapi pdh wevtapi advapi32 dbghelp shell32 powrprof version gdi32)
 
   add_executable(WinFreezeTrace WIN32 src/launcher.c src/version.rc)
   target_compile_definitions(WinFreezeTrace PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0601 WINVER=0x0601)
