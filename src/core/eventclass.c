@@ -9,7 +9,7 @@ static bool has(const wchar_t *p, const wchar_t *x)    { return wft_wcs_icontain
 
 EventClass event_classify(const wchar_t *p, uint32_t id, uint32_t level, bool wer_live) {
     if (!p) return EVC_NONE;
-    if (has(p, L"WHEA")) return level <= 2 ? EVC_WHEA_UNCORRECTED : EVC_WHEA_CORRECTED;
+    if (has(p, L"WHEA")) return (level >= 1 && level <= 2) ? EVC_WHEA_UNCORRECTED : EVC_WHEA_CORRECTED;   /* level 0 = unknown, not an error */
 
     if (eq(p, L"disk") || eq(p, L"storahci") || eq(p, L"stornvme") || eq(p, L"storport") ||
         eq(p, L"storufs") || eq(p, L"partmgr") || starts(p, L"iaStor") || starts(p, L"nvme") ||
