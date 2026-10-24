@@ -4,8 +4,6 @@
 
 #include "wft_types.h"
 
-enum { STARTUP_NONE = 0, STARTUP_ADD = 1, STARTUP_REMOVE = 2 };
-
 typedef struct Config {
     uint32_t interval_ms;        /* sampling period                         */
     uint32_t history_seconds;    /* RAM history requested                   */
@@ -20,10 +18,7 @@ typedef struct Config {
     bool     make_dump;
     bool     redact;             /* mask user/computer names, serials, titles */
     bool     hotkey;
-    bool     tray;               /* notification-area icon (on/off, exit, start with Windows) */
-    bool     notify;             /* balloon notifications from the tray icon  */
     bool     report_dir_set;
-    int      startup_action;     /* STARTUP_* : one-shot command, then exit    */
     bool     exit_running;       /* --exit: ask the running instance to quit   */
     wchar_t  report_root[WFT_PATH_CCH];
     int      warning_count;
@@ -40,7 +35,7 @@ int         config_ring_capacity(const Config *c);
 const char *config_usage(void);
 /* The command-line options that reproduce this configuration (only values that differ from the defaults;
  * --report-dir is written as given, so resolve it to an absolute path first). One-shot commands such as
- * --add-startup are never included. Returns false when it does not fit. */
+ * --exit are never included. Returns false when it does not fit. */
 bool        config_format_args(const Config *c, wchar_t *out, size_t cch);
 
 #endif

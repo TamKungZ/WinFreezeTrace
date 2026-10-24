@@ -17,8 +17,6 @@ void config_defaults(Config *c) {
     c->dump_timeout_ms = 15000;
     c->make_dump = true;
     c->hotkey = true;
-    c->tray = true;
-    c->notify = true;
 }
 
 static void warn(Config *c, const char *fmt, const char *name, uint32_t was, uint32_t now) {
@@ -70,17 +68,14 @@ CliResult config_parse(Config *c, int argc, wchar_t **argv, char *err, size_t er
         if (wft_wcs_ieq(name, L"--no-dump"))   { c->make_dump = false; continue; }
         if (wft_wcs_ieq(name, L"--redact"))    { c->redact = true; continue; }
         if (wft_wcs_ieq(name, L"--no-hotkey")) { c->hotkey = false; continue; }
-        if (wft_wcs_ieq(name, L"--no-tray"))   { c->tray = false; continue; }
-        if (wft_wcs_ieq(name, L"--no-notify")) { c->notify = false; continue; }
         if (wft_wcs_ieq(name, L"--exit"))      { c->exit_running = true; continue; }
+        /* 0.5.x options whose job moved to WinFreezeTrace Manager. The two display flags are still accepted so
+         * that an old Startup entry or scheduled task keeps working; start-up registration is now an error. */
+        if (wft_wcs_ieq(name, L"--no-tray") || wft_wcs_ieq(name, L"--no-notify")) continue;
         if (wft_wcs_ieq(name, L"--add-startup") || wft_wcs_ieq(name, L"--remove-startup")) {
-            int want = wft_wcs_ieq(name, L"--add-startup") ? STARTUP_ADD : STARTUP_REMOVE;
-            if (c->startup_action != STARTUP_NONE && c->startup_action != want) {
-                wft_snprintf(err, err_cch, "--add-startup and --remove-startup cannot be combined");
-                return CLI_ERROR;
-            }
-            c->startup_action = want;
-            continue;
+            wft_snprintf(err, err_cch, "'%s' moved to WinFreezeTrace Manager (Settings > Start with Windows)",
+                         wft_wcs_ieq(name, L"--add-startup") ? "--add-startup" : "--remove-startup");
+            return CLI_ERROR;
         }
         if (wft_wcs_ieq(name, L"--background")) continue;       /* accepted for compatibility (always true) */
 
@@ -150,8 +145,6 @@ bool config_format_args(const Config *c, wchar_t *out, size_t cch) {
         { L"--no-dump",   offsetof(Config, make_dump), true },
         { L"--redact",    offsetof(Config, redact),    false },
         { L"--no-hotkey", offsetof(Config, hotkey),    true },
-        { L"--no-tray",   offsetof(Config, tray),      true },
-        { L"--no-notify", offsetof(Config, notify),    true },
     };
     for (size_t k = 0; k < sizeof flags / sizeof flags[0]; ++k) {
         bool v = *(const bool *)((const char *)c + flags[k].off);
@@ -189,13 +182,10 @@ const char *config_usage(void) {
 "  --cooldown <s>           Gap between auto captures    (5..86400, default 60)\n"
 "  --no-hotkey              Do not register Ctrl+Alt+F12 (manual capture)\n"
 "\n"
-"Tray icon and start-up:\n"
-"  --no-tray                Run without the notification-area icon (no on/off or exit menu)\n"
-"  --no-notify              Never show balloon notifications from the tray icon\n"
-"  --add-startup            Add WinFreezeTrace to Windows Startup apps for this user (with the\n"
-"                           other options given here), then exit\n"
-"  --remove-startup         Remove it from Startup apps, then exit\n"
+"Control:\n"
 "  --exit                   Ask the running instance in this session to quit, then exit\n"
+"                           (the tray icon, Start with Windows and settings live in\n"
+"                           WinFreezeTrace Manager, a separate program)\n"
 "\n"
 "Reports:\n"
 "  --report-dir <path>      Report root (default %LOCALAPPDATA%\\WinFreezeTrace\\reports)\n"
@@ -210,6 +200,6 @@ const char *config_usage(void) {
 "Other:\n"
 "  --help, --version\n"
 "\n"
-"Options also accept --name=value. Ctrl+Alt+F12 forces a capture. The tray icon turns\n"
-"monitoring on/off (click) and offers Start with Windows, the reports folder and Exit (menu).\n";
+"Options also accept --name=value. Ctrl+Alt+F12 forces a capture. The recorder has no\n"
+"window of its own: use WinFreezeTrace Manager to turn monitoring on/off, capture, open reports.\n";
 }
