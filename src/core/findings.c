@@ -67,6 +67,11 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
     memset(r, 0, sizeof *r);
     const Sample *s = in->s;
     int n = in->n;
+    if (n <= 0 || !s) {
+        add(r, CONF_LOW, "no_data", "The timeline was empty, so no metric analysis was possible",
+            "Check winfreezetrace.log; the recorder may have been paused or just started.", "No samples were available.");
+        return;
+    }
     double ref = n > 0 ? s[n - 1].mono_ms : 0.0;
     int ls = 0;
     while (ls < n && s[ls].mono_ms < ref - (double)in->lead_seconds * 1000.0) ++ls;
