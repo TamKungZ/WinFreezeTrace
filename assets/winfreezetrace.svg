@@ -1,50 +1,51 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" aria-label="WinFreezeTrace icon">
   <defs>
-    <linearGradient id="c" x1=".1" y1="0" x2=".9" y2="1">
-      <stop offset="0" stop-color="#fff"/>
-      <stop offset=".55" stop-color="#e4effe"/>
-      <stop offset="1" stop-color="#a9d0ff"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5fd0ff"/>
+      <stop offset=".55" stop-color="#1f7ff0"/>
+      <stop offset="1" stop-color="#0b4fc4"/>
     </linearGradient>
-    <linearGradient id="d" x1=".2" y1="0" x2=".8" y2="1">
-      <stop offset="0" stop-color="#3a8fe6"/>
-      <stop offset="1" stop-color="#1744a6"/>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".55"/>
+      <stop offset=".4" stop-color="#fff" stop-opacity="0"/>
     </linearGradient>
-    <linearGradient id="a" x1=".2" y1="0" x2=".8" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity=".62"/>
-      <stop offset="1" stop-color="#bfdaff" stop-opacity=".4"/>
+    <linearGradient id="red" x1=".2" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#ff6b7d"/>
+      <stop offset="1" stop-color="#e0243c"/>
     </linearGradient>
-    <linearGradient id="f" x1=".2" y1="0" x2=".8" y2="1">
-      <stop offset="0" stop-color="#fff"/>
-      <stop offset="1" stop-color="#e6f0fd"/>
-    </linearGradient>
-    <linearGradient id="g" x1=".2" y1="0" x2=".8" y2="1">
-      <stop offset="0" stop-color="#ff7f8b"/>
-      <stop offset="1" stop-color="#f0475f"/>
-    </linearGradient>
-    <filter id="b" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#143c9e" flood-opacity=".32"/>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <circle cx="206" cy="206" r="52" fill="#000"/>
+    </mask>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#052a73" flood-opacity=".35"/>
     </filter>
   </defs>
-  <path d="m27 50 178-24.5q22-3 22 20.5v122h-37V50Z" fill="url(#a)"/>
-  <path d="m27 50 178-24.5q22-3 22 20.5v74" fill="none" stroke="#fff" stroke-opacity=".5"/>
-  <g filter="url(#b)">
-    <path fill-rule="evenodd" fill="url(#c)" d="M27 50.5h171q13 0 13 13v148q0 13-13 13H27q-13 0-13-13v-148q0-13 13-13M37 72q-3 0-3 3v128.5q0 3 3 3h152q3 0 3-3V75q0-3-3-3Z"/>
-  </g>
-  <path fill="none" stroke="#3c74d8" stroke-opacity=".25" stroke-width=".8" d="M27 50.5h171q13 0 13 13v148q0 13-13 13H27q-13 0-13-13v-148q0-13 13-13Z"/>
-  <rect x="34" y="72" width="158" height="134.5" rx="4" fill="url(#d)"/>
-  <g transform="translate(113 140)scale(2.15)" stroke="#eef5ff" stroke-width="4.8" stroke-linecap="round" stroke-linejoin="round" fill="none">
-    <g id="e">
-      <path d="M0 0v-25"/>
-      <path stroke-width="4.2" d="m-6.5-19.5 6.5 5 6.5-5"/>
+  <g filter="url(#sh)">
+    <g mask="url(#cut)">
+      <rect x="12" y="20" width="232" height="212" rx="26" fill="url(#bg)"/>
+      <path d="M38 20H218a26 26 0 0 1 26 26V64H12V46a26 26 0 0 1 26-26Z" fill="#fff" fill-opacity=".16"/>
+      <rect x="12.5" y="20.5" width="231" height="211" rx="25.5" fill="none" stroke="url(#rim)"/>
+      <g fill="#fff" fill-opacity=".9">
+        <circle cx="38" cy="42" r="5"/>
+        <circle cx="56" cy="42" r="5"/>
+        <circle cx="74" cy="42" r="5"/>
+      </g>
     </g>
-    <use href="#e" transform="rotate(60)"/>
-    <use href="#e" transform="rotate(120)"/>
-    <use href="#e" transform="rotate(180)"/>
-    <use href="#e" transform="rotate(240)"/>
-    <use href="#e" transform="rotate(300)"/>
   </g>
-  <g filter="url(#b)">
-    <circle cx="206" cy="195" r="35.5" fill="url(#f)"/>
+  <g transform="translate(112 142)" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <g id="arm">
+      <path d="M0 0V-50"/>
+      <path d="m-12.5-37.5 12.5 9.5 12.5-9.5"/>
+    </g>
+    <use href="#arm" transform="rotate(60)"/>
+    <use href="#arm" transform="rotate(120)"/>
+    <use href="#arm" transform="rotate(180)"/>
+    <use href="#arm" transform="rotate(240)"/>
+    <use href="#arm" transform="rotate(300)"/>
   </g>
-  <circle cx="206" cy="195" r="23" fill="url(#g)"/>
+  <g filter="url(#sh)">
+    <circle cx="206" cy="206" r="42" fill="url(#red)"/>
+  </g>
+  <circle cx="206" cy="206" r="14" fill="#fff"/>
 </svg>
