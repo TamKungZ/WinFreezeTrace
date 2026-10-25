@@ -1,19 +1,15 @@
 name: Publish to winget
 
-# Opens a PR against microsoft/winget-pkgs for a GitHub release.
-#   - automatically after the "Release" workflow succeeded for a tag
-#   - or by hand: Actions > Publish to winget > Run workflow, with the tag (e.g. v0.8.0)
+# Manual only: Actions > Publish to winget > Run workflow, with the release tag (e.g. v0.8.0).
+# Downloads the Setup installers of that GitHub release, writes the winget manifests from them
+# and opens a PR against microsoft/winget-pkgs. Works for the first version of the package too.
 #
 # One-time setup:
-#   1. The first version of the package must already be in winget-pkgs (submit it once by hand with wingetcreate).
-#   2. Fork microsoft/winget-pkgs under the account that owns the token.
-#   3. Add a classic PAT with the public_repo scope as the repository secret WINGET_TOKEN.
-#   4. Optional: repository variable WINGET_IDENTIFIER if the package id is not TamKungZ.WinFreezeTrace.
+#   1. Fork microsoft/winget-pkgs under the account that owns the token.
+#   2. Add a classic PAT with the public_repo scope as the repository secret WINGET_TOKEN.
+#   3. Optional: repository variable WINGET_IDENTIFIER if the package id is not TamKungZ.WinFreezeTrace.
 
 on:
-  workflow_run:
-    workflows: ['Release']
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -28,27 +24,107 @@ jobs:
   winget:
     name: winget-pkgs PR
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
     env:
-      TAG: ${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}
+      TAG: ${{ github.event.inputs.tag }}
+      IDENTIFIER: ${{ vars.WINGET_IDENTIFIER || 'TamKungZ.WinFreezeTrace' }}
       GH_TOKEN: ${{ github.token }}
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
-      - name: Check the release
+      - name: Download the release installers
         shell: pwsh
         run: |
-          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { Write-Warning "Skipping '$env:TAG': winget only gets stable vX.Y.Z releases."; "SKIP=1" >> $env:GITHUB_ENV; exit 0 }
-          $json = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isPrerelease,assets | ConvertFrom-Json
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { throw "'$env:TAG' is not a stable vX.Y.Z tag." }
+          if (-not $env:WINGET_TOKEN) { throw 'Secret WINGET_TOKEN is not set.' }
+          $json = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isPrerelease,publishedAt | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "Release $env:TAG not found" }
-          if ($json.isPrerelease) { Write-Warning 'Pre-release: skipped.'; "SKIP=1" >> $env:GITHUB_ENV; exit 0 }
-          $setups = @($json.assets | Where-Object { $_.name -like 'WinFreezeTrace-Setup-*-*.exe' })
-          if ($setups.Count -lt 1) { throw 'The release has no WinFreezeTrace-Setup-*.exe assets.' }
-          $setups | ForEach-Object { $_.name }
+          if ($json.isPrerelease) { throw 'Pre-releases are not published to winget.' }
+          "RELEASE_DATE=$(([datetime]$json.publishedAt).ToString('yyyy-MM-dd'))" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force installers | Out-Null
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern 'WinFreezeTrace-Setup-*-*.exe' --dir installers
+          if ($LASTEXITCODE -ne 0) { throw 'Download failed' }
+          Get-ChildItem installers | ForEach-Object { $_.Name }
 
-      - name: Submit to winget-pkgs
-        if: env.SKIP != '1'
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: ${{ vars.WINGET_IDENTIFIER || 'TamKungZ.WinFreezeTrace' }}
-          release-tag: ${{ env.TAG }}
-          installers-regex: 'WinFreezeTrace-Setup-.*-(x64|x86)\.exe$'
-          token: ${{ secrets.WINGET_TOKEN }}
+      - name: Write the manifests
+        shell: pwsh
+        run: |
+          $version = $env:TAG.Substring(1)
+          $id = $env:IDENTIFIER
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
+          $schema = 'https://aka.ms/winget-manifest.{0}.1.6.0.schema.json'
+          $out = New-Item -ItemType Directory -Force "manifest"
+
+          $installers = foreach ($arch in 'x64', 'x86') {
+            $file = Get-Item "installers/WinFreezeTrace-Setup-$version-$arch.exe" -ErrorAction SilentlyContinue
+            if (-not $file) { Write-Warning "No $arch installer in the release."; continue }
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
+            @("- Architecture: $arch", "  InstallerUrl: $base/$($file.Name)", "  InstallerSha256: $hash")
+          }
+          if (-not $installers) { throw 'No installers found.' }
+
+          $header = "PackageIdentifier: $id", "PackageVersion: $version"
+
+          $versionManifest = $header + "DefaultLocale: en-US", "ManifestType: version", "ManifestVersion: 1.6.0"
+          $versionManifest = "# yaml-language-server: `$schema=$($schema -f 'version')", '' + $versionManifest
+
+          $installerManifest = $header + @(
+            'MinimumOSVersion: 10.0.17763.0',
+            'InstallerType: nullsoft',
+            'Scope: machine',
+            'InstallModes:', '- interactive', '- silent', '- silentWithProgress',
+            'ProductCode: WinFreezeTrace',
+            "ReleaseDate: $env:RELEASE_DATE",
+            'Installers:') + $installers + @('ManifestType: installer', 'ManifestVersion: 1.6.0')
+          $installerManifest = "# yaml-language-server: `$schema=$($schema -f 'installer')", '' + $installerManifest
+
+          $localeManifest = $header + @(
+            'PackageLocale: en-US',
+            'Publisher: TamKungZ_',
+            'PublisherUrl: https://github.com/TamKungZ',
+            'PublisherSupportUrl: https://github.com/TamKungZ/WinFreezeTrace/issues',
+            'PackageName: WinFreezeTrace',
+            'PackageUrl: https://github.com/TamKungZ/WinFreezeTrace',
+            'License: 0BSD',
+            'LicenseUrl: https://github.com/TamKungZ/WinFreezeTrace/blob/main/LICENSE',
+            'ShortDescription: Background recorder that captures diagnostic reports when Windows stalls or an app stops responding.',
+            'Tags:', '- diagnostics', '- freeze', '- hang', '- troubleshooting',
+            "ReleaseNotesUrl: https://github.com/TamKungZ/WinFreezeTrace/releases/tag/$env:TAG",
+            'ManifestType: defaultLocale', 'ManifestVersion: 1.6.0')
+          $localeManifest = "# yaml-language-server: `$schema=$($schema -f 'defaultLocale')", '' + $localeManifest
+
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText("$out/$id.yaml", (($versionManifest -join "`n") + "`n"), $utf8)
+          [IO.File]::WriteAllText("$out/$id.installer.yaml", (($installerManifest -join "`n") + "`n"), $utf8)
+          [IO.File]::WriteAllText("$out/$id.locale.en-US.yaml", (($localeManifest -join "`n") + "`n"), $utf8)
+          Get-Content "$out/$id.installer.yaml"
+
+      - name: Open the winget-pkgs PR
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $version = $env:TAG.Substring(1)
+          $id = $env:IDENTIFIER
+          $upstream = 'microsoft/winget-pkgs'
+          $me = gh api user --jq .login
+          $fork = "$me/winget-pkgs"
+          gh api "repos/$fork" --jq .full_name | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Fork $fork not found. Fork $upstream first." }
+
+          $branch = "$id-$version"
+          $sha = gh api "repos/$upstream/git/ref/heads/master" --jq .object.sha
+          gh api "repos/$fork/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not create branch $branch on $fork (does it already exist?)" }
+
+          $parts = $id.Split('.')
+          $dir = "manifests/$($parts[0].Substring(0,1).ToLower())/$($parts -join '/')/$version"
+          foreach ($f in Get-ChildItem manifest) {
+            $content = [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName))
+            gh api -X PUT "repos/$fork/contents/$dir/$($f.Name)" -f "message=New version: $id version $version" -f "content=$content" -f "branch=$branch" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not upload $($f.Name)" }
+          }
+
+          $kind = 'New version'
+          gh api "repos/$upstream/contents/manifests/$($parts[0].Substring(0,1).ToLower())/$($parts -join '/')" --silent 2>$null
+          if ($LASTEXITCODE -ne 0) { $kind = 'New package' }
+          gh pr create --repo $upstream --head "${me}:$branch" --base master --title "${kind}: $id version $version" --body "Adds $id $version from https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not open the pull request' }
