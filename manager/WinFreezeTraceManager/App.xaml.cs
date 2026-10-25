@@ -28,10 +28,17 @@ public partial class App : Application
         UnhandledException += (_, e) => { Log.Error("unhandled exception: " + e.Exception); e.Handled = true; };
     }
 
+    private static bool IsStartupTaskActivation()
+    {
+        try { return Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs().Kind == Microsoft.Windows.AppLifecycle.ExtendedActivationKind.StartupTask; }
+        catch { return false; }
+    }
+
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var argv = Environment.GetCommandLineArgs().Skip(1).ToArray();
-        bool background = argv.Any(a => a.Equals("--background", StringComparison.OrdinalIgnoreCase));
+        bool background = argv.Any(a => a.Equals("--background", StringComparison.OrdinalIgnoreCase))
+            || IsStartupTaskActivation();   // MSIX: the manifest StartupTask cannot pass --background
         bool quit = argv.Any(a => a.Equals("--exit", StringComparison.OrdinalIgnoreCase));
 
         _mutex = new Mutex(true, SingletonName, out bool first);

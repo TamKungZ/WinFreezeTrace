@@ -29,6 +29,12 @@
                          Square71x71Logo="Assets\Square71x71Logo.png"
                          Square310x310Logo="Assets\Square310x310Logo.png" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- Same as the installer's optional "Start with Windows" step: off until the user turns it on (Manager or Settings > Apps > Startup). -->
+        <uap5:Extension Category="windows.startupTask" Executable="Manager\WinFreezeTraceManager.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap5:StartupTask TaskId="ManagerStartup" Enabled="false" DisplayName="WinFreezeTrace Manager" />
+        </uap5:Extension>
+      </Extensions>
     </Application>
     <Application Id="Recorder" Executable="WinFreezeTrace.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
