@@ -5,10 +5,10 @@ param(
     [Parameter(Mandatory)][string]$Dll,
     [Parameter(Mandatory)][string]$ManagerDir,
     [Parameter(Mandatory)][string]$Out,
-    [string]$IdentityName = 'TamKungZ.WinFreezeTrace',
+    [string]$IdentityName = 'TamKungZ.WinFreezeTraceManager',
     [string]$Publisher,
     [string]$PublisherDisplayName = 'TamKungZ_',
-    [string]$DisplayName = 'WinFreezeTrace',
+    [string]$DisplayName = 'WinFreezeTraceManager',
     [string]$Pfx,
     [string]$PfxPassword
 )
