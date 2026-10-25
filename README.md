@@ -4,13 +4,20 @@ WinFreezeTrace is a Windows background recorder for investigating system stalls 
 
 Findings are heuristic, not proof of root cause. Use reports to guide further investigation with ETW/WPR or a debugger.
 
+## Install
+
+Download a release from the GitHub releases page:
+
+- **Setup** (`WinFreezeTrace-Setup-<version>-<arch>.exe`): installs the recorder and, optionally, WinFreezeTrace Manager. Running a newer Setup over an existing install updates it.
+- **Portable zip** (`WinFreezeTrace-<version>-win-<arch>.zip`): the recorder only, with the task scripts described below.
+
 ## Usage
 
 Run `WinFreezeTrace.exe` to start monitoring. It runs in the background without a window or tray icon.
 
 Press `Ctrl+Alt+F12` to capture a report manually, or let WinFreezeTrace capture one automatically when a trigger is detected.
 
-Run `WinFreezeTrace.exe --help` to see available command-line options.
+Run `WinFreezeTrace.exe --help` to see available command-line options. `WinFreezeTrace.exe --exit` asks a running recorder to quit.
 
 ### WinFreezeTrace Manager
 
@@ -18,9 +25,9 @@ WinFreezeTrace Manager provides a tray icon and control window for managing the 
 
 - **Dashboard:** Check monitoring status and capture a report.
 - **Reports:** Browse incidents, preview summaries, and open or delete reports.
-- **Settings:** Configure monitoring, capture triggers, dump creation, redaction, report location, and startup behavior.
+- **Settings:** Configure the recorder (check interval, stall and hang thresholds, cooldown, history length, report limit, hotkey, memory dump, redaction), notifications, tray behavior, window material, and Start with Windows.
 
-The Manager starts the recorder when needed. Closing its window hides it to the tray; exiting the Manager does not stop the recorder unless you choose **Exit and stop the recorder**.
+The Manager can start the recorder, and can notify you when a report is saved. Closing its window hides it to the tray; exiting the Manager does not stop the recorder unless you enable **Stop the recorder when the Manager exits**, or use **Stop the recorder completely** on the Dashboard.
 
 The Manager is optional. You can run the recorder independently.
 
@@ -28,13 +35,7 @@ The Manager is optional. You can run the recorder independently.
 
 In WinFreezeTrace Manager, enable **Settings > Start with Windows** to launch the Manager in the background at login.
 
-Alternatively, run `install_task.cmd` to register a scheduled task that starts the recorder and restarts it if needed. Run `uninstall_task.cmd` to remove the task and recorder files. Add `--purge` to also delete reports and logs.
-
-To reduce monitoring frequency and disable process dumps, run:
-
-```bat
-WinFreezeTrace.exe --interval 2000 --no-dump
-```
+Without the Manager, run `install_task.cmd` to register a scheduled task that starts the recorder at logon. It copies the recorder to `%LOCALAPPDATA%\WinFreezeTrace\bin` and passes any options you give it, for example `install_task.cmd --redact --max-reports 20`. Run `uninstall_task.cmd` to remove the task and the copied files. Add `--purge` to also delete reports and logs.
 
 ## Capture Triggers
 
@@ -48,9 +49,9 @@ Automatic captures have a 60-second cooldown. Sleep gaps and stalls shortly afte
 
 ## Reports
 
-Reports are saved to `%LOCALAPPDATA%\WinFreezeTrace\reports\` by default. Use `--report-dir` to change the report directory.
+Reports are saved to `%LOCALAPPDATA%\WinFreezeTrace\reports\` by default. Use `--report-dir` to change the report directory. Old reports are pruned beyond `--max-reports` (default 50).
 
-Start with `summary.txt` for ranked findings, supporting evidence, and suggested next steps. `timeline.csv` contains the recorded history leading up to the trigger. Other files provide process, thread, wait-chain, Event Log, driver, storage, display, power, startup-program, and system details.
+Start with `summary.txt` for ranked findings, supporting evidence, and suggested next steps. `timeline.csv` contains the recorded history leading up to the trigger. Other files provide process, thread, module, wait-chain, Event Log, driver, storage, display, power, and system details. `summary.json` holds the same findings in machine-readable form.
 
 Process CPU and I/O rates are measured just after the trigger, not before it.
 
