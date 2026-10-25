@@ -104,11 +104,40 @@ jobs:
           Copy-Item manager-out (Join-Path $stage 'Manager') -Recurse
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/WinFreezeTrace-$env:VERSION-win-${{ matrix.arch }}.zip" -Force
 
+      - name: Build MSIX package
+        shell: pwsh
+        env:
+          MSIX_PFX_BASE64: ${{ secrets.MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+        run: |
+          $p = @{
+            Arch       = '${{ matrix.arch }}'
+            Version    = $env:VERSION_NUM
+            Exe        = Join-Path $PWD 'build/Release/WinFreezeTrace.exe'
+            Dll        = Join-Path $PWD 'build/Release/WinFreezeTraceCore.dll'
+            ManagerDir = Join-Path $PWD 'manager-out'
+            Out        = Join-Path $PWD 'msix-out/WinFreezeTrace-${{ matrix.arch }}.msix'
+          }
+          if ($env:MSIX_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
+            $p.Pfx = $pfx
+            $p.PfxPassword = $env:MSIX_PFX_PASSWORD
+          }
+          & installer/msix/pack-msix.ps1 @p
+
       - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.arch }}
           path: dist/*
+          if-no-files-found: error
+
+      - name: Upload MSIX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: msix-${{ matrix.arch }}
+          path: msix-out/*.msix
           if-no-files-found: error
 
   publish:
@@ -127,6 +156,37 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+
+      - name: Download MSIX packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: msix-*
+          path: msix-out
+          merge-multiple: true
+
+      - name: Build MSIX bundle
+        shell: pwsh
+        env:
+          MSIX_PFX_BASE64: ${{ secrets.MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+        run: |
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)') { throw "Tag '$env:TAG' must look like v1.2.3" }
+          $bundleVersion = "$($Matches[1]).0"
+          $kit = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\makeappx.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $kit) { throw 'makeappx.exe not found' }
+          $out = Join-Path $PWD "dist/WinFreezeTrace-$($env:TAG.Substring(1)).msixbundle"
+          & $kit.FullName bundle /d msix-out /p $out /bv $bundleVersion /o
+          if ($LASTEXITCODE -ne 0) { throw "makeappx bundle failed ($LASTEXITCODE)" }
+          if ($env:MSIX_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
+            & (Join-Path $kit.DirectoryName 'signtool.exe') sign /fd SHA256 /f $pfx /p $env:MSIX_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $out
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+            Remove-Item $pfx -Force
+          } else {
+            Write-Warning 'MSIX_PFX_BASE64 is not set: the bundle is unsigned and cannot be installed until it is signed.'
+          }
 
       - name: Checksums
         shell: pwsh
@@ -151,3 +211,4 @@ jobs:
           }
           gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
           if ($LASTEXITCODE -ne 0) { throw 'release upload failed' }
+          
