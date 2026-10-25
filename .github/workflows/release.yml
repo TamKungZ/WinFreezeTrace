@@ -158,6 +158,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - name: Download build output
         uses: actions/download-artifact@v4
         with:
@@ -223,7 +228,27 @@ jobs:
           if ($env:TAG -match '-') { $extra += '--prerelease' }
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG --verify-tag --title "WinFreezeTrace $ver" --generate-notes @extra
+            # Release notes = the CHANGELOG.md section for this version (the exact version, else the version without a -suffix)
+            $lines = Get-Content CHANGELOG.md
+            $notes = @()
+            foreach ($v in @($ver, ($ver -replace '-.*$', '')) | Select-Object -Unique) {
+              $start = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match "^##\s+v?$([regex]::Escape($v))(\s|$)" })
+              if ($start -ge 0) {
+                $end = $lines.Count
+                for ($i = $start + 1; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^##\s') { $end = $i; break } }
+                $notes = $lines[($start + 1)..($end - 1)]
+                break
+              }
+            }
+            $notesText = ($notes -join "`n").Trim()
+            if ($notesText) {
+              Set-Content -Path release-notes.md -Value $notesText -Encoding utf8
+              $notesArgs = @('--notes-file', 'release-notes.md')
+            } else {
+              Write-Warning "No CHANGELOG.md section for $ver; generating notes from commits."
+              $notesArgs = @('--generate-notes')
+            }
+            gh release create $env:TAG --verify-tag --title "WinFreezeTrace $ver" @notesArgs @extra
             if ($LASTEXITCODE -ne 0) { throw 'release create failed' }
           }
           gh release upload $env:TAG (Get-ChildItem dist -File).FullName --clobber
