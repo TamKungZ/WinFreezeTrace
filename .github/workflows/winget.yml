@@ -126,5 +126,8 @@ jobs:
           $kind = 'New version'
           gh api "repos/$upstream/contents/manifests/$($parts[0].Substring(0,1).ToLower())/$($parts -join '/')" --silent 2>$null
           if ($LASTEXITCODE -ne 0) { $kind = 'New package' }
-          gh pr create --repo $upstream --head "${me}:$branch" --base master --title "${kind}: $id version $version" --body "Adds $id $version from https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          $summary = "Adds $id $version from https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          $template = gh api -H 'Accept: application/vnd.github.raw' "repos/$upstream/contents/.github/PULL_REQUEST_TEMPLATE.md" 2>$null
+          $body = if ($LASTEXITCODE -eq 0 -and $template) { "$summary`n`n---`n`n" + ($template -join "`n") } else { $summary }
+          gh pr create --repo $upstream --head "${me}:$branch" --base master --title "${kind}: $id version $version" --body $body
           if ($LASTEXITCODE -ne 0) { throw 'Could not open the pull request' }
