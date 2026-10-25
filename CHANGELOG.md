@@ -57,7 +57,7 @@
 - All icon files contain 16, 20, 24, 32, 40, 48, 64, 128 and 256 px images, each rendered from the SVG at its own size.
 - **Separate icons for the installer and the uninstaller.** `Setup.exe` uses `assets/setup.ico` (green badge with a download arrow) and 
   `Uninstall.exe` uses `assets/uninstall.ico` (red badge with a trash can). Both keep the window + snowflake artwork of the application icon, so the two 
-  programs can be told apart in Explorer, the taskbar and the Start Menu shortcut. Set through `MUI_ICON` / `MUI_UNICON` in `installer/WinFreezeTrace.nsi`;
+  programs can be told apart in Explorer, the taskbar and the Start Menu shortcut. Set through `MUI_ICON` / `MUI_UNICON` in `installer/nsis/WinFreezeTrace.nsi`;
   sources are `assets/setup.svg` / `assets/uninstall.svg`. The Add/Remove Programs entry keeps the application icon.
 - **Terms of Use and Privacy Notice.** New `TERMS.txt` and `PRIVACY.txt` (what a report contains, memory-dump warning, redaction limits, where data is stored, no network use). The installer shows them as two extra pages after the license: Terms (must be accepted) and Privacy (Next only). Both are installed next to the program, removed by the uninstaller and included in the portable zip.
 - **Installer/uninstaller clean-up pass.** The uninstaller now also removes the Manager's per-user "Start with Windows" entry (and the matching Startup apps 
