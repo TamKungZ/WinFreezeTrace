@@ -5,6 +5,10 @@ param(
     [Parameter(Mandatory)][string]$Dll,
     [Parameter(Mandatory)][string]$ManagerDir,
     [Parameter(Mandatory)][string]$Out,
+    [string]$IdentityName = 'TamKungZ.WinFreezeTrace',
+    [string]$Publisher,
+    [string]$PublisherDisplayName = 'TamKungZ_',
+    [string]$DisplayName = 'WinFreezeTrace',
     [string]$Pfx,
     [string]$PfxPassword
 )
@@ -18,9 +22,13 @@ if (-not $kit) { throw 'makeappx.exe not found (Windows SDK missing)' }
 $makeappx = $kit.FullName
 $signtool = Join-Path $kit.DirectoryName 'signtool.exe'
 
-$publisher = 'CN=TamKungZ_'
+$certSubject = $null
 if ($Pfx) {
-    $publisher = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $Pfx, $PfxPassword).Subject
+    $certSubject = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $Pfx, $PfxPassword).Subject
+}
+if (-not $Publisher) { $Publisher = if ($certSubject) { $certSubject } else { 'CN=TamKungZ_' } }
+if ($certSubject -and $certSubject -ne $Publisher) {
+    throw "Certificate subject '$certSubject' does not match Publisher '$Publisher'. Do not sign packages that use a Partner Center publisher."
 }
 
 $stage = Join-Path ([IO.Path]::GetTempPath()) "msix-$Arch"
@@ -48,7 +56,10 @@ $source.Dispose()
 $icon.Dispose()
 
 $manifest = (Get-Content "$PSScriptRoot\AppxManifest.xml" -Raw).
-    Replace('@PUBLISHER@', [Security.SecurityElement]::Escape($publisher)).
+    Replace('@IDENTITY_NAME@', [Security.SecurityElement]::Escape($IdentityName)).
+    Replace('@PUBLISHER@', [Security.SecurityElement]::Escape($Publisher)).
+    Replace('@PUBLISHER_DISPLAY_NAME@', [Security.SecurityElement]::Escape($PublisherDisplayName)).
+    Replace('@DISPLAY_NAME@', [Security.SecurityElement]::Escape($DisplayName)).
     Replace('@VERSION@', $Version).
     Replace('@ARCH@', $Arch)
 [IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifest, (New-Object System.Text.UTF8Encoding $false))

@@ -109,6 +109,10 @@ jobs:
         env:
           MSIX_PFX_BASE64: ${{ secrets.MSIX_PFX_BASE64 }}
           MSIX_PFX_PASSWORD: ${{ secrets.MSIX_PFX_PASSWORD }}
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+          MSIX_DISPLAY_NAME: ${{ vars.MSIX_DISPLAY_NAME }}
         run: |
           $p = @{
             Arch       = '${{ matrix.arch }}'
@@ -118,6 +122,10 @@ jobs:
             ManagerDir = Join-Path $PWD 'manager-out'
             Out        = Join-Path $PWD 'msix-out/WinFreezeTrace-${{ matrix.arch }}.msix'
           }
+          if ($env:MSIX_IDENTITY_NAME) { $p.IdentityName = $env:MSIX_IDENTITY_NAME }
+          if ($env:MSIX_PUBLISHER) { $p.Publisher = $env:MSIX_PUBLISHER }
+          if ($env:MSIX_PUBLISHER_DISPLAY_NAME) { $p.PublisherDisplayName = $env:MSIX_PUBLISHER_DISPLAY_NAME }
+          if ($env:MSIX_DISPLAY_NAME) { $p.DisplayName = $env:MSIX_DISPLAY_NAME }
           if ($env:MSIX_PFX_BASE64) {
             $pfx = Join-Path $env:RUNNER_TEMP 'msix.pfx'
             [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_BASE64))
@@ -175,7 +183,8 @@ jobs:
           $kit = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\makeappx.exe" |
             Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
           if (-not $kit) { throw 'makeappx.exe not found' }
-          $out = Join-Path $PWD "dist/WinFreezeTrace-$($env:TAG.Substring(1)).msixbundle"
+          New-Item -ItemType Directory -Force bundle-out | Out-Null
+          $out = Join-Path $PWD "bundle-out/WinFreezeTrace-$($env:TAG.Substring(1)).msixbundle"
           & $kit.FullName bundle /d msix-out /p $out /bv $bundleVersion /o
           if ($LASTEXITCODE -ne 0) { throw "makeappx bundle failed ($LASTEXITCODE)" }
           if ($env:MSIX_PFX_BASE64) {
@@ -184,9 +193,17 @@ jobs:
             & (Join-Path $kit.DirectoryName 'signtool.exe') sign /fd SHA256 /f $pfx /p $env:MSIX_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $out
             if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
             Remove-Item $pfx -Force
+            Copy-Item $out dist
           } else {
-            Write-Warning 'MSIX_PFX_BASE64 is not set: the bundle is unsigned and cannot be installed until it is signed.'
+            Write-Warning 'Bundle is unsigned: fine for a Partner Center upload, not installable directly. It is kept out of the GitHub release.'
           }
+
+      - name: Upload MSIX bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: msixbundle
+          path: bundle-out/*.msixbundle
+          if-no-files-found: error
 
       - name: Checksums
         shell: pwsh
