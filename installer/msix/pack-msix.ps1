@@ -8,7 +8,7 @@ param(
     [string]$IdentityName = 'TamKungZ.WinFreezeTraceManager',
     [string]$Publisher,
     [string]$PublisherDisplayName = 'TamKungZ_',
-    [string]$DisplayName = 'WinFreezeTraceManager',
+    [string]$DisplayName = 'WinFreezeTrace Manager',
     [string]$Pfx,
     [string]$PfxPassword
 )
