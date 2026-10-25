@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- **Updating by running the new installer over the old one.** The installer now treats an existing install as an update instead of a fresh install:
+  - The old Manager and recorder are asked to quit, then the installer waits until their files are free (up to about 10 s). If a file is still locked
+    (for example an instance in another user's session, which `--exit` cannot reach) they are ended forcibly. This replaces the fixed 1.5 s pause of 0.7.0.
+  - The `Manager` folder is replaced instead of merged, so files of an older Manager no longer pile up.
+  - The copy of the recorder that `install_task.cmd` keeps in `%LOCALAPPDATA%\WinFreezeTrace\bin` is updated for every user profile that has one, so the logon
+    task runs the new version too. The uninstaller removes these copies (reports, settings and logs in `%LOCALAPPDATA%\WinFreezeTrace` are still kept).
+  - The choices of the previous install (Manager, PATH, Start with Windows, Start Menu shortcuts) are pre-ticked, and a component that is unticked is removed,
+    so a re-install always matches the checkboxes. The recorder-only / Manager start-up entry and Start Menu shortcut are swapped when the Manager is added or removed.
+- **Downgrade protection.** Installing an older version over a newer one asks first; silent installs refuse (exit code 5) unless `/ALLOWDOWNGRADE` is given.
+  The installed version is stored as `VersionNum` (installs from before 0.8.0 are compared by their `DisplayVersion`).
+- **Switching between the x86 and x64 installers** removes the other architecture first (asks, or does it silently with `/S`) instead of leaving two installs side by side.
+  Reports and settings are kept; the other architecture's component choices are not carried over.
+- **New silent-install switches:** `/PATH=0|1`, `/STARTUP=0|1`, `/SHORTCUTS=0|1` (and `/MANAGER=0|1`, which now also accepts `1`). Without a switch the choice of the previous install applies.
+- README section "Installing and updating"; `PRIVACY.txt` now also mentions the log files and the removal of the `bin` copy.
+
+### Changed
+
+- The publisher name is now written as **TamKungZ_** (as in `LICENSE`) in Settings > Apps, the Manager's assembly metadata (`Company`), `TERMS.txt` and `PRIVACY.txt`. The GitHub links keep the repository address `TamKungZ/WinFreezeTrace`.
+
+### Fixed
+
+- **The 64-bit installer ignored the folder of an existing install.** `InstallDirRegKey` is read before the installer picks the 64-bit registry view, so an update of an
+  install in a custom folder went to the default folder (a second copy), and an x86 install could be picked up as the folder of the x64 one. The folder is now read from the right view.
+
+### Verification status
+
+- The installer was compiled with makensis 3.09 (x64 and x86, with and without the Manager) and the following were run under Wine 9 with **placeholder program files**, not the real
+  recorder and Manager: install, silent update of an older build (stale Manager files removed, choices kept), downgrade refusal and `/ALLOWDOWNGRADE`, components switched off by
+  the switches, update into a custom folder, per-user copies updated and removed, x64 -> x86 and x86 -> x64 switching, update while the old exe was running and locked, and uninstall
+  (no files, shortcuts or registry keys left; the user's other Run entries and data were untouched).
+- **Not exercised:** a real Windows machine, the PATH step (Wine has no PowerShell), the interactive pages (the dialogs for downgrade and architecture switch), and a real update from the released 0.7.0 installer.
+- Version bumped to 0.8.0 (`CMakeLists.txt`, `src/core/wft_types.h`, `src/version.rc`, Manager `.csproj`, `TERMS.txt`, `PRIVACY.txt`). The recorder and the Manager code are otherwise unchanged from 0.7.0.
+
 ## 0.7.0
 
 ### Changed

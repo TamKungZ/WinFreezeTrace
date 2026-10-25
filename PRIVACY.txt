@@ -1,7 +1,7 @@
 WinFreezeTrace - Privacy Notice
 ===============================
 
-Version 0.7.0
+Version 0.8.0
 Publisher: TamKungZ_ (https://github.com/TamKungZ/WinFreezeTrace)
 
 Short version: WinFreezeTrace works entirely on your computer. It has no
@@ -87,9 +87,11 @@ The author receives nothing from your computer. If you send a report to someone
 redact what you do not want to share.
 
 Uninstalling WinFreezeTrace removes the program, its shortcuts, registry
-entries and PATH entry. It does NOT delete your reports or Manager settings in
-%LOCALAPPDATA%\WinFreezeTrace. Delete that folder yourself if you want them
-gone (for every Windows user who used the program).
+entries, PATH entry, logon task and the copy of the recorder that
+install_task.cmd keeps in %LOCALAPPDATA%\WinFreezeTrace\bin. It does NOT
+delete your reports or Manager settings in %LOCALAPPDATA%\WinFreezeTrace.
+Delete that folder yourself if you want them gone (for every Windows user who
+used the program).
 
 7. Children
 -----------

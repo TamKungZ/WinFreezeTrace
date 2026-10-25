@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
-project(WinFreezeTrace VERSION 0.7.0 LANGUAGES C)
+project(WinFreezeTrace VERSION 0.8.0 LANGUAGES C)
 
 # One version everywhere: fail the configure step instead of shipping mismatched numbers.
 file(STRINGS src/core/wft_types.h _wft_hdr_ver REGEX "^#define WFT_VERSION")
