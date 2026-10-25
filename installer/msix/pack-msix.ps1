@@ -38,22 +38,7 @@ New-Item -ItemType Directory -Force (Join-Path $stage 'Assets') | Out-Null
 Copy-Item $Exe, $Dll, "$root\LICENSE", "$root\TERMS.txt", "$root\PRIVACY.txt", "$root\README.md", "$root\CHANGELOG.md" $stage
 Copy-Item $ManagerDir (Join-Path $stage 'Manager') -Recurse
 
-Add-Type -AssemblyName System.Drawing
-$icon = New-Object System.Drawing.Icon "$root\assets\winfreezetrace.ico", 256, 256
-$source = $icon.ToBitmap()
-foreach ($logo in @{ 'StoreLogo' = 50; 'Square44x44Logo' = 44; 'Square150x150Logo' = 150 }.GetEnumerator()) {
-    $size = $logo.Value
-    $bmp = New-Object System.Drawing.Bitmap $size, $size
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $g.Clear([System.Drawing.Color]::Transparent)
-    $g.DrawImage($source, 0, 0, $size, $size)
-    $g.Dispose()
-    $bmp.Save((Join-Path $stage "Assets\$($logo.Key).png"), [System.Drawing.Imaging.ImageFormat]::Png)
-    $bmp.Dispose()
-}
-$source.Dispose()
-$icon.Dispose()
+Copy-Item "$PSScriptRoot\Assets\*.png" (Join-Path $stage 'Assets')
 
 $manifest = (Get-Content "$PSScriptRoot\AppxManifest.xml" -Raw).
     Replace('@IDENTITY_NAME@', [Security.SecurityElement]::Escape($IdentityName)).
