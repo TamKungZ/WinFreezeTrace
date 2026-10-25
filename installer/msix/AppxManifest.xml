@@ -42,8 +42,7 @@
         Description="WinFreezeTrace recorder."
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png"
-        AppListEntry="none" />
+        Square44x44Logo="Assets\Square44x44Logo.png" />
       <Extensions>
         <uap5:Extension Category="windows.appExecutionAlias" Executable="WinFreezeTrace.exe" EntryPoint="Windows.FullTrustApplication">
           <uap5:AppExecutionAlias>
