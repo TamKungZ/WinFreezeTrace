@@ -1,0 +1,54 @@
+name: Publish to winget
+
+# Opens a PR against microsoft/winget-pkgs for a GitHub release.
+#   - automatically after the "Release" workflow succeeded for a tag
+#   - or by hand: Actions > Publish to winget > Run workflow, with the tag (e.g. v0.8.0)
+#
+# One-time setup:
+#   1. The first version of the package must already be in winget-pkgs (submit it once by hand with wingetcreate).
+#   2. Fork microsoft/winget-pkgs under the account that owns the token.
+#   3. Add a classic PAT with the public_repo scope as the repository secret WINGET_TOKEN.
+#   4. Optional: repository variable WINGET_IDENTIFIER if the package id is not TamKungZ.WinFreezeTrace.
+
+on:
+  workflow_run:
+    workflows: ['Release']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish, e.g. v0.8.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  winget:
+    name: winget-pkgs PR
+    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
+    env:
+      TAG: ${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the release
+        shell: pwsh
+        run: |
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { Write-Warning "Skipping '$env:TAG': winget only gets stable vX.Y.Z releases."; "SKIP=1" >> $env:GITHUB_ENV; exit 0 }
+          $json = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isPrerelease,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Release $env:TAG not found" }
+          if ($json.isPrerelease) { Write-Warning 'Pre-release: skipped.'; "SKIP=1" >> $env:GITHUB_ENV; exit 0 }
+          $setups = @($json.assets | Where-Object { $_.name -like 'WinFreezeTrace-Setup-*-*.exe' })
+          if ($setups.Count -lt 1) { throw 'The release has no WinFreezeTrace-Setup-*.exe assets.' }
+          $setups | ForEach-Object { $_.name }
+
+      - name: Submit to winget-pkgs
+        if: env.SKIP != '1'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: ${{ vars.WINGET_IDENTIFIER || 'TamKungZ.WinFreezeTrace' }}
+          release-tag: ${{ env.TAG }}
+          installers-regex: 'WinFreezeTrace-Setup-.*-(x64|x86)\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
