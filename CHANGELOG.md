@@ -21,6 +21,10 @@
 
 ### Changed
 
+- **New application icon set.** A bright blue window with a title bar, a snowflake and a red record badge replaces the v7 icon. The three SVG sources (`assets/winfreezetrace.svg`,
+  `assets/setup.svg`, `assets/uninstall.svg`) were replaced and everything built from them was regenerated, each size rendered from the SVG at its own size (16, 20, 24, 32, 40, 48, 64, 128, 256 px):
+  `assets/winfreezetrace.ico` (shortcuts, Add/Remove Programs), the Manager's `app.ico` (executable and window icon) and the 256 px `logo.png` (title bar, About page),
+  and `assets/setup.ico` / `assets/uninstall.ico` (green download-arrow and red trash-can badges for `Setup.exe` and `Uninstall.exe`). The four tray icons are unchanged: they only share the snowflake.
 - The publisher name is now written as **TamKungZ_** (as in `LICENSE`) in Settings > Apps, the Manager's assembly metadata (`Company`), `TERMS.txt` and `PRIVACY.txt`. The GitHub links keep the repository address `TamKungZ/WinFreezeTrace`.
 
 ### Fixed
@@ -35,6 +39,8 @@
   the switches, update into a custom folder, per-user copies updated and removed, x64 -> x86 and x86 -> x64 switching, update while the old exe was running and locked, and uninstall
   (no files, shortcuts or registry keys left; the user's other Run entries and data were untouched).
 - **Not exercised:** a real Windows machine, the PATH step (Wine has no PowerShell), the interactive pages (the dialogs for downgrade and architecture switch), and a real update from the released 0.7.0 installer.
+- The new icons were rendered, read back from the generated `.ico` files at 256, 48, 32 and 16 px, and checked inside the built installer: the icon in `Setup.exe` is `setup.ico` and the icon in
+  the generated `Uninstall.exe` is `uninstall.ico`. They have **not** been seen on a real Windows desktop, tray or Start Menu, nor in the compiled Manager.
 - Version bumped to 0.8.0 (`CMakeLists.txt`, `src/core/wft_types.h`, `src/version.rc`, Manager `.csproj`, `TERMS.txt`, `PRIVACY.txt`). The recorder and the Manager code are otherwise unchanged from 0.7.0.
 
 ## 0.7.0
