@@ -1,7 +1,7 @@
 WinFreezeTrace - Terms of Use
 =============================
 
-Version 0.8.0
+Version 0.9.0
 Publisher: TamKungZ_ (https://github.com/TamKungZ/WinFreezeTrace)
 
 Please read these terms before installing or using WinFreezeTrace (the
