@@ -64,6 +64,26 @@ $manifest = (Get-Content "$PSScriptRoot\AppxManifest.xml" -Raw).
     Replace('@ARCH@', $Arch)
 [IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'), $manifest, (New-Object System.Text.UTF8Encoding $false))
 
+# Windows resolves every manifest logo through resources.pri when the package has one. The WinUI build's PRI only indexes the files
+# that build knew about, so the Assets\*.png copied above (scale-*, targetsize-*, targetsize-*_altform-unplated) are invisible to it
+# and the shell falls back to the plain Square44x44Logo.png and draws a grey/black plate behind it (Task Manager, taskbar, Start).
+# Re-index the staged folder so those qualifiers end up in resources.pri. The default config's PRI indexer keeps the WinUI entries.
+$makepri = Join-Path $kit.DirectoryName 'makepri.exe'
+if (-not (Test-Path $makepri)) { throw 'makepri.exe not found (Windows SDK missing)' }
+$tmp = [IO.Path]::GetTempPath()
+$priCfg  = Join-Path $tmp "priconfig-$Arch.xml"
+$priNew  = Join-Path $tmp "resources-$Arch.pri"
+$priDump = Join-Path $tmp "resources-$Arch.xml"
+& $makepri createconfig /cf $priCfg /dq en-US /pv 10.0.0 /o
+if ($LASTEXITCODE -ne 0) { throw "makepri createconfig failed ($LASTEXITCODE)" }
+& $makepri new /pr $stage /cf $priCfg /mn (Join-Path $stage 'AppxManifest.xml') /of $priNew /o
+if ($LASTEXITCODE -ne 0) { throw "makepri new failed ($LASTEXITCODE)" }
+Copy-Item $priNew (Join-Path $stage 'resources.pri') -Force
+& $makepri dump /if (Join-Path $stage 'resources.pri') /of $priDump /dt detailed /o | Out-Null
+if (-not (Select-String -Path $priDump -Pattern 'unplated' -Quiet)) {
+    Write-Warning 'resources.pri has no altform-unplated entries; the app icon will get a plate in Task Manager/taskbar.'
+}
+
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 & $makeappx pack /d $stage /p $Out /o
 if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }
