@@ -9,6 +9,7 @@ const char *dump_result_text(DumpResult r) {
         case DUMP_DENYLISTED: return "skipped: credential/system-critical process is never dumped";
         case DUMP_LOW_DISK: return "skipped: free disk space below --min-free-mb";
         case DUMP_NO_ACCESS: return "not available: access denied (protected or elevated process)";
+        case DUMP_SKIPPED_STORAGE: return "skipped: storage stall (a dump would suspend the foreground app and write to the slow disk)";
         case DUMP_TIMEOUT: return "aborted: exceeded --dump-timeout-ms (partial file removed)";
         default: return "failed";
     }

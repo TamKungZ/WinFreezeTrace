@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Stalls on the system disk were caught late or not at all.** The 0.2 triggers (slow disk, deep disk queue) had been dropped, so only a foreground app failing three
+  probes in a row could fire. In a real report (five 12-17 s stalls of drive C: within 3 minutes) the app-hang trigger fired 12-13 s after a stall began, and
+  never for the worst one (10 s latency, queue 212), where the foreground app kept answering its message queue. See Added.
+- **Time spent blocked inside the sampling step was invisible.** Lateness was measured around the wait only, so a long `PdhCollectQueryData`, process snapshot or probe
+  did not count. It is now added to the lateness of that sample (minus any time the machine slept), and a log line says how it split between counters and probe.
+- `system_info.txt` said "Windows 10 Pro" on Windows 11 (the registry keeps the old name). Builds >= 22000 now show "Windows 11".
+
+### Added
+
+- **Storage stall trigger** (`storage_stall`): worst-disk latency >= 500 ms, or worst-disk queue >= 10 for two samples. Options `--disk-latency-ms` and `--disk-queue`
+  (`0` = off). Ignored during the resume grace period and the cooldown. A storage-stall capture does not write `target.dmp`: the foreground app is not the cause, the dump suspends it, and it would be written to the slow disk. `summary.txt` shows the worst disk at the trigger; the Manager labels these reports "Storage stall".
+
+### Verification status
+
+- Core tests: 139 checks pass under AddressSanitizer/UBSan (20 new: storage trigger, cooldown, resume grace, queue streak, unavailable counters, `0` = off, config).
+- The Windows layer and the DLL compile and link without warnings with MinGW-w64 (x64). **Not run on Windows**: the new lateness and the trigger have not been seen firing live.
+  Replaying a real 180 s timeline through the trigger logic fires at the start of the stalls, 12-13 s before the app-hang trigger. The Manager change is a single label and was not compiled.
+- Defaults are the 0.2 values and have not been tuned. A busy HDD can exceed 500 ms legitimately; raise `--disk-latency-ms` if reports are noisy.
+
 ## 0.8.0
 
 ### Added

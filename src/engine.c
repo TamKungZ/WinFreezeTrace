@@ -26,6 +26,7 @@ static void log_config(const Config *c, const PdhState *p, bool host_ok, bool co
     log_msg("INFO", "WinFreezeTrace %s started: interval=%lu ms history=%lu s stall=%lu ms hang=%lu ms x%lu cooldown=%lu s dump=%s redact=%s max-reports=%lu",
             WFT_VERSION, (unsigned long)c->interval_ms, (unsigned long)c->history_seconds, (unsigned long)c->stall_ms, (unsigned long)c->hang_timeout_ms,
             (unsigned long)c->hang_samples, (unsigned long)c->cooldown_seconds, c->make_dump ? "on" : "off", c->redact ? "on" : "off", (unsigned long)c->max_reports);
+    log_msg("INFO", "storage triggers: worst-disk latency >= %lu ms, queue >= %lu (0 = off)", (unsigned long)c->disk_latency_ms, (unsigned long)c->disk_queue);
     log_msg_w("INFO", "report root: %s", c->report_root);
     for (int i = 0; i < c->warning_count; ++i) log_msg("WARN", "config: %s", c->warnings[i]);
     if (!p->ok) log_msg("WARN", "PDH unavailable: only memory/system metrics will be recorded");
@@ -114,9 +115,11 @@ int WftRun(HINSTANCE inst) {
     log_config(&cfg, &pdh, host_ok, control_ok);
 
     TriggerConfig tc; trigger_config_default(&tc, cfg.stall_ms, cfg.hang_samples, cfg.cooldown_seconds);
+    tc.disk_latency_ms = (double)cfg.disk_latency_ms;
+    tc.disk_queue = (double)cfg.disk_queue;
     TriggerState ts; trigger_init(&ts);
     const DWORD self = plat_self_pid();
-    double last_suppress_log = -1e12;
+    double last_suppress_log = -1e12, last_block_log = -1e12;
     bool was_paused = false;
     HANDLE waits[2] = { stop, wake };
 
@@ -146,14 +149,32 @@ int WftRun(HINSTANCE inst) {
 
         Sample s; memset(&s, 0, sizeof s);
         plat_local_time(&s.ts);
-        s.mono_ms = wake_ms; s.wake_late_ms = late;
+        s.mono_ms = wake_ms;
         metrics_collect(&pdh, &s.m);
+        double c1 = plat_qpc_ms();
         ForegroundInfo fi; foreground_probe(&fi, cfg.hang_timeout_ms, self);
+        double c2 = plat_qpc_ms(), u2 = plat_unbiased_ms();
+
+        /* The wait above only measures how late the wake-up was. If this thread then sits inside a PDH call, the
+         * process snapshot or the probe (typical when storage or a driver stalls), that time would be invisible, so it
+         * counts too. Sleep during the collection is removed the same way as for the wait. */
+        double slept_in_work = 0.0;
+        int work_late = trigger_late_ms(c2 - wake_ms, (u1 >= 0.0 && u2 >= 0.0) ? u2 - u1 : -1.0, 0, &slept_in_work);
+        if (slept_in_work > 0.0) trigger_note_resume(&ts, &tc, c2);
+        long long total_late = (long long)late + (long long)work_late;
+        late = total_late > 2147483647LL ? 2147483647 : (int)total_late;
+        s.wake_late_ms = late;
+        if (work_late >= 500 && c2 - last_block_log > 10000.0) {
+            log_msg("INFO", "sampling was blocked for %d ms (performance counters %.0f ms, foreground probe %.0f ms)",
+                    work_late, c1 - wake_ms, c2 - c1);
+            last_block_log = c2;
+        }
         foreground_to_sample(&fi, &s);
         ring_push(&ring, &s);
 
         if (host_take_resume()) trigger_note_resume(&ts, &tc, wake_ms);
         TriggerInput ti; ti.now_ms = wake_ms; ti.late_ms = late; ti.probe_status = fi.status; ti.manual = control_take_capture();
+        ti.disk_latency_ms = s.m.disk_worst_latency_ms; ti.disk_queue = s.m.disk_worst_queue;
         TriggerDecision d = trigger_evaluate(&ts, &tc, &ti);
 
         if (d.suppressed && wake_ms - last_suppress_log > 30000.0) {

@@ -157,6 +157,13 @@ static void write_summary_txt(Cap *c, const Outcome *o) {
     fprintf(f, "Version: %s\r\nTrigger: %s\r\nTime: %04u-%02u-%02u %02u:%02u:%02u.%03u local\r\nIncident folder: %s\r\n", WFT_VERSION, trigger_name(o->reason),
             t->ts.year, t->ts.month, t->ts.day, t->ts.hour, t->ts.minute, t->ts.second, t->ts.millis, o->incident);
     fprintf(f, "Wake lateness at trigger: %d ms (threshold %lu ms)\r\n", t->wake_late_ms, (unsigned long)cfg->stall_ms);
+    if (WFT_HAS(t->m.disk_worst_latency_ms) || WFT_HAS(t->m.disk_worst_queue)) {
+        fputs("Worst disk at trigger:", f);
+        if (WFT_HAS(t->m.disk_worst_latency_ms)) fprintf(f, " latency %.1f ms (threshold %lu)", t->m.disk_worst_latency_ms, (unsigned long)cfg->disk_latency_ms);
+        if (WFT_HAS(t->m.disk_worst_queue)) fprintf(f, ", queue %.1f (threshold %lu)", t->m.disk_worst_queue, (unsigned long)cfg->disk_queue);
+        if (t->m.disk_worst_name[0]) fprintf(f, ", disk %s", t->m.disk_worst_name);
+        fputs("\r\n", f);
+    }
     WCHAR exe[WFT_PATH_CCH]; wft_wsnprintf(exe, WFT_PATH_CCH, L"%ls", o->fg->path);
     if (cfg->redact) wft_redact_user_path(exe, WFT_PATH_CCH);
     fprintf(f, "Foreground: PID %lu / TID %lu\r\n  EXE:   ", (unsigned long)o->fg->pid, (unsigned long)o->fg->tid); wft_write_utf8(f, exe);
@@ -293,7 +300,10 @@ bool capture_run(const Config *cfg, TriggerReason reason, const Sample *s, int n
     step_end(&c);
     step_begin(&c, "threads");    o.nhot = threads_finish_write(c.dir, fg->pid, fg->tid, &ts, o.hot, 5); if (ts.truncated) warn(&c, "thread list truncated"); step_end(&c);
     step_begin(&c, "modules");    modules_write(c.dir, fg->pid, cfg); step_end(&c);
-    step_begin(&c, "minidump");   o.dump = dump_write(c.dir, fg->pid, fg->path, cfg, &o.dump_err, &o.dump_ms); step_end(&c);
+    step_begin(&c, "minidump");
+    if (reason == TRIGGER_STORAGE_STALL) { o.dump = DUMP_SKIPPED_STORAGE; o.dump_err = 0; o.dump_ms = 0; }   /* the app is not the cause, and the dump would be written to the stalled disk */
+    else o.dump = dump_write(c.dir, fg->pid, fg->path, cfg, &o.dump_err, &o.dump_ms);
+    step_end(&c);
     step_begin(&c, "events");     events_capture(c.dir, cfg, trigger_ft, ev); step_end(&c);
     DriveFacts df; PowerFacts pf;
     step_begin(&c, "system");     sysinfo_write_system(c.dir, cfg); sysinfo_write_drives(c.dir, &df); sysinfo_write_power(c.dir, &pf); step_end(&c);

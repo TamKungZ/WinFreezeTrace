@@ -41,8 +41,9 @@ Without the Manager, run `install_task.cmd` to register a scheduled task that st
 
 WinFreezeTrace captures a report when any of these conditions occurs:
 
-- The watchdog wakes up at least 1,500 ms late.
-- The foreground window fails three consecutive 250 ms responsiveness probes.
+- **Storage stall:** any physical disk averages at least 500 ms per I/O (`--disk-latency-ms`), or has a queue of at least 10 for two samples in a row (`--disk-queue`). Set either to `0` to turn it off. This catches the case where nothing is at 100% and the foreground app is not "Not Responding", yet clicks, audio and window switching all stall.
+- **System stall:** the sampling loop is at least 1,500 ms late. This counts both a late wake-up and time spent blocked inside a counter read or the foreground probe.
+- **App not responding:** the foreground window fails three consecutive 250 ms responsiveness probes.
 - You press `Ctrl+Alt+F12`.
 
 Automatic captures have a 60-second cooldown. Sleep gaps and stalls shortly after resume are filtered, but false positives and missed stalls are possible.

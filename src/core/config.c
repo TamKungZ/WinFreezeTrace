@@ -11,6 +11,8 @@ void config_defaults(Config *c) {
     c->hang_timeout_ms = 250;
     c->hang_samples = 3;
     c->cooldown_seconds = 60;
+    c->disk_latency_ms = 500;
+    c->disk_queue = 10;
     c->lead_seconds = 30;
     c->max_reports = 50;
     c->min_free_mb = 1024;
@@ -40,6 +42,8 @@ static const Opt k_opts[] = {
     { L"--stall-ms",        "--stall-ms",        U32(stall_ms),         500, 30000 },
     { L"--hang-timeout-ms", "--hang-timeout-ms", U32(hang_timeout_ms),   50,  5000 },
     { L"--hang-samples",    "--hang-samples",    U32(hang_samples),       2,    20 },
+    { L"--disk-latency-ms", "--disk-latency-ms", U32(disk_latency_ms),    0, 60000 },
+    { L"--disk-queue",      "--disk-queue",      U32(disk_queue),         0,  1000 },
     { L"--cooldown",        "--cooldown",        U32(cooldown_seconds),   5, 86400 },
     { L"--lead-window",     "--lead-window",     U32(lead_seconds),       5,   300 },
     { L"--max-reports",     "--max-reports",     U32(max_reports),        0,  5000 },
@@ -179,6 +183,8 @@ const char *config_usage(void) {
 "  --stall-ms <ms>          Watchdog lateness trigger    (500..30000, default 1500)\n"
 "  --hang-timeout-ms <ms>   Foreground WM_NULL timeout   (50..5000, default 250)\n"
 "  --hang-samples <n>       Failed probes in a row       (2..20, default 3)\n"
+"  --disk-latency-ms <ms>   Worst-disk latency trigger   (0 = off, max 60000, default 500)\n"
+"  --disk-queue <n>         Worst-disk queue trigger     (0 = off, max 1000, default 10)\n"
 "  --cooldown <s>           Gap between auto captures    (5..86400, default 60)\n"
 "  --no-hotkey              Do not register Ctrl+Alt+F12 (manual capture)\n"
 "\n"

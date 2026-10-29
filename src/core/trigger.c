@@ -5,6 +5,7 @@ const char *trigger_name(TriggerReason r) {
         case TRIGGER_SCHEDULER_STALL: return "scheduler_stall";
         case TRIGGER_APP_HANG:        return "foreground_app_hang";
         case TRIGGER_MANUAL:          return "manual_hotkey";
+        case TRIGGER_STORAGE_STALL:   return "storage_stall";
         default:                      return "unknown";
     }
 }
@@ -14,6 +15,7 @@ const wchar_t *trigger_name_w(TriggerReason r) {
         case TRIGGER_SCHEDULER_STALL: return L"scheduler_stall";
         case TRIGGER_APP_HANG:        return L"foreground_app_hang";
         case TRIGGER_MANUAL:          return L"manual_hotkey";
+        case TRIGGER_STORAGE_STALL:   return L"storage_stall";
         default:                      return L"unknown";
     }
 }
@@ -34,6 +36,9 @@ void trigger_config_default(TriggerConfig *c, uint32_t stall_ms, uint32_t hang_s
     c->cooldown_s = cooldown_s;
     c->resume_grace_ms = 15000;
     c->sleep_gap_ms = 60000;
+    c->disk_latency_ms = 500.0;      /* same defaults as 0.2 */
+    c->disk_queue = 10.0;
+    c->disk_queue_samples = 2;
 }
 
 void trigger_init(TriggerState *s) {
@@ -41,16 +46,19 @@ void trigger_init(TriggerState *s) {
     s->last_capture_ms = -1e12;
     s->last_manual_ms = -1e12;
     s->resume_until_ms = -1e12;
+    s->queue_streak = 0;
 }
 
 void trigger_note_resume(TriggerState *s, const TriggerConfig *c, double now_ms) {
     s->resume_until_ms = now_ms + (double)c->resume_grace_ms;
     s->hung_streak = 0;
+    s->queue_streak = 0;
 }
 
 void trigger_note_capture(TriggerState *s, double now_ms) {
     s->last_capture_ms = now_ms;
     s->hung_streak = 0;
+    s->queue_streak = 0;
 }
 
 TriggerDecision trigger_evaluate(TriggerState *s, const TriggerConfig *c, const TriggerInput *in) {
@@ -69,6 +77,18 @@ TriggerDecision trigger_evaluate(TriggerState *s, const TriggerConfig *c, const 
     }
 
     bool in_cooldown = (in->now_ms - s->last_capture_ms) < (double)c->cooldown_s * 1000.0;
+
+    /* Storage: this is what a "nothing responds but nothing is at 100%" stall usually looks like. Latency is an average
+     * over completed I/O, so one bad interval is already serious; a deep queue is also normal under a heavy copy, so it
+     * has to hold for a few samples. Counters that are unavailable (WFT_NA < 0) never count. */
+    bool slow_disk = c->disk_latency_ms > 0.0 && WFT_HAS(in->disk_latency_ms) && in->disk_latency_ms >= c->disk_latency_ms;
+    bool deep_queue = c->disk_queue > 0.0 && WFT_HAS(in->disk_queue) && in->disk_queue >= c->disk_queue;
+    if (deep_queue) ++s->queue_streak; else s->queue_streak = 0;
+    if (slow_disk || (deep_queue && s->queue_streak >= c->disk_queue_samples)) {
+        if (in->now_ms < s->resume_until_ms)  d.suppressed = "resume-grace";      /* disks spin up after a resume */
+        else if (in_cooldown)                 d.suppressed = "cooldown";
+        else { d.reason = TRIGGER_STORAGE_STALL; d.suppressed = NULL; return d; }
+    }
 
     if (in->late_ms >= (int)c->stall_ms) {
         if (in->late_ms >= (int)c->sleep_gap_ms)          d.suppressed = "sleep-or-hibernate-gap";

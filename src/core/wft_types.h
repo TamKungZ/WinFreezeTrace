@@ -42,7 +42,8 @@ typedef enum TriggerReason {
     TRIGGER_NONE = 0,
     TRIGGER_SCHEDULER_STALL = 1,
     TRIGGER_APP_HANG = 2,
-    TRIGGER_MANUAL = 3
+    TRIGGER_MANUAL = 3,
+    TRIGGER_STORAGE_STALL = 4   /* a physical disk is slow or backed up (the 0.2 triggers) */
 } TriggerReason;
 
 /*
@@ -71,7 +72,7 @@ typedef struct Metrics {
 typedef struct Sample {
     WftTime ts;
     double  mono_ms;            /* monotonic time of the sample (QPC)           */
-    int     wake_late_ms;       /* scheduler lateness of the sampling wake-up   */
+    int     wake_late_ms;       /* lateness of this sampling cycle: wake-up delay + time spent collecting */
     Metrics m;
     uint32_t fg_pid, fg_tid;
     int     probe_status;       /* ProbeStatus                                  */

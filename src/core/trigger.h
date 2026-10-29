@@ -9,6 +9,9 @@ typedef struct TriggerConfig {
     uint32_t cooldown_s;        /* auto-capture cooldown                       */
     uint32_t resume_grace_ms;   /* ignore stalls this long after a resume      */
     uint32_t sleep_gap_ms;      /* lateness >= this is a sleep/hibernate gap   */
+    double   disk_latency_ms;   /* worst-disk latency that triggers; 0 = off   */
+    double   disk_queue;        /* worst-disk queue that triggers; 0 = off     */
+    uint32_t disk_queue_samples;/* consecutive samples the queue must hold     */
 } TriggerConfig;
 
 typedef struct TriggerState {
@@ -16,6 +19,7 @@ typedef struct TriggerState {
     double   last_capture_ms;
     double   last_manual_ms;
     double   resume_until_ms;
+    uint32_t queue_streak;
 } TriggerState;
 
 typedef struct TriggerInput {
@@ -23,6 +27,8 @@ typedef struct TriggerInput {
     int      late_ms;
     int      probe_status;
     bool     manual;
+    double   disk_latency_ms;   /* worst single physical disk, WFT_NA if unknown */
+    double   disk_queue;        /* worst single physical disk (instantaneous)    */
 } TriggerInput;
 
 typedef struct TriggerDecision {

@@ -42,7 +42,14 @@ void sysinfo_write_system(const WCHAR *dir, const Config *cfg) {
     fputs("Computer: ", f); wft_write_utf8(f, cfg->redact ? L"<redacted>" : computer);
     fputs("\r\nUser: ", f);    wft_write_utf8(f, cfg->redact ? L"<redacted>" : user); fputs("\r\n", f);
     const WCHAR *cv = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
-    reg_line(f, HKEY_LOCAL_MACHINE, cv, L"ProductName", "Windows");
+    {   /* Windows 11 still stores "Windows 10 ..." in ProductName; the build number (>= 22000) tells them apart. */
+        WCHAR name[512], build[32];
+        if (reg_str(HKEY_LOCAL_MACHINE, cv, L"ProductName", name, 512)) {
+            if (reg_str(HKEY_LOCAL_MACHINE, cv, L"CurrentBuildNumber", build, 32) && _wtoi(build) >= 22000 && !wcsncmp(name, L"Windows 10", 10))
+                name[9] = L'1';   /* "Windows 10" -> "Windows 11" */
+            fputs("Windows: ", f); wft_write_utf8(f, name); fputs("\r\n", f);
+        }
+    }
     reg_line(f, HKEY_LOCAL_MACHINE, cv, L"DisplayVersion", "Display version");
     reg_line(f, HKEY_LOCAL_MACHINE, cv, L"CurrentBuildNumber", "Build");
     DWORD ubr = 0, sz = sizeof ubr;

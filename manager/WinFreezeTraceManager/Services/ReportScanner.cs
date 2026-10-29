@@ -15,6 +15,7 @@ internal sealed class ReportItem
     private static readonly (string Key, string Label)[] TriggerLabels =
     {
         ("scheduler_stall", "System stall"),
+        ("storage_stall", "Storage stall"),
         ("foreground_app_hang", "App not responding"),
         ("manual_hotkey", "Manual capture"),
     };

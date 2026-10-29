@@ -165,7 +165,7 @@ static void test_stats(void) {
 
 static void test_trigger(void) {
     TriggerConfig c; TriggerState s; trigger_config_default(&c, 1500, 3, 60); trigger_init(&s);
-    TriggerInput in = { 100000.0, 0, PROBE_OK, false };
+    TriggerInput in = { 100000.0, 0, PROBE_OK, false, WFT_NA, WFT_NA };
     CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
     in.late_ms = 2000; TriggerDecision d = trigger_evaluate(&s, &c, &in);
     CHECK(d.reason == TRIGGER_SCHEDULER_STALL);
@@ -196,6 +196,58 @@ static void test_trigger(void) {
     in.probe_status = PROBE_DENIED; trigger_evaluate(&s, &c, &in);   /* UIPI denial must reset the streak */
     in.probe_status = PROBE_TIMEOUT;
     CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+}
+
+static void test_storage_trigger(void) {
+    TriggerConfig c; TriggerState s; trigger_config_default(&c, 1500, 3, 60); trigger_init(&s);
+    CHECK(c.disk_latency_ms == 500.0 && c.disk_queue == 10.0 && c.disk_queue_samples == 2);   /* the 0.2 defaults */
+    TriggerInput in = { 100000.0, 0, PROBE_OK, false, 2.0, 0.0 };
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+
+    /* a slow disk alone is enough, even though the foreground app answers and the watchdog is on time */
+    in.disk_latency_ms = 650.0; TriggerDecision d = trigger_evaluate(&s, &c, &in);
+    CHECK(d.reason == TRIGGER_STORAGE_STALL && !d.suppressed);
+    CHECK(!strcmp(trigger_name(d.reason), "storage_stall"));
+    trigger_note_capture(&s, in.now_ms);
+    in.now_ms += 5000; d = trigger_evaluate(&s, &c, &in);
+    CHECK(d.reason == TRIGGER_NONE && d.suppressed && !strcmp(d.suppressed, "cooldown"));
+
+    /* disks spin up after a resume: not a finding */
+    trigger_init(&s); in.now_ms = 500000; trigger_note_resume(&s, &c, in.now_ms);
+    in.now_ms += 1000; d = trigger_evaluate(&s, &c, &in);
+    CHECK(d.reason == TRIGGER_NONE && !strcmp(d.suppressed, "resume-grace"));
+    in.now_ms += 20000; d = trigger_evaluate(&s, &c, &in);
+    CHECK(d.reason == TRIGGER_STORAGE_STALL);
+
+    /* a deep queue must hold for two samples; a dip in between resets it; unavailable counters never count */
+    trigger_init(&s); in.now_ms = 1e6; in.disk_latency_ms = 2.0; in.disk_queue = 12.0;
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+    in.disk_queue = 3.0; CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+    in.disk_queue = 12.0; CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+    in.disk_queue = WFT_NA; in.disk_latency_ms = WFT_NA; CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+    in.disk_queue = 12.0; in.disk_latency_ms = 2.0;
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_STORAGE_STALL);
+
+    /* 0 switches each condition off */
+    trigger_init(&s); c.disk_latency_ms = 0.0; c.disk_queue = 0.0; in.disk_latency_ms = 5000.0; in.disk_queue = 500.0;
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE && trigger_evaluate(&s, &c, &in).reason == TRIGGER_NONE);
+
+    /* the hotkey still wins over a storage condition */
+    trigger_config_default(&c, 1500, 3, 60); trigger_init(&s); in.manual = true;
+    CHECK(trigger_evaluate(&s, &c, &in).reason == TRIGGER_MANUAL);
+}
+
+static void test_storage_config(void) {
+    Config c; char err[160]; config_defaults(&c);
+    CHECK(c.disk_latency_ms == 500 && c.disk_queue == 10);
+    wchar_t *off[] = { L"x", L"--disk-latency-ms", L"0", L"--disk-queue=0" };
+    CHECK(config_parse(&c, 4, off, err, sizeof err) == CLI_OK && c.disk_latency_ms == 0 && c.disk_queue == 0 && c.warning_count == 0);
+    wchar_t args[256]; CHECK(config_format_args(&c, args, 256) && wcsstr(args, L"--disk-latency-ms 0") && wcsstr(args, L"--disk-queue 0"));
+    config_defaults(&c);
+    wchar_t *hi[] = { L"x", L"--disk-queue", L"5000" };
+    CHECK(config_parse(&c, 3, hi, err, sizeof err) == CLI_OK && c.disk_queue == 1000 && c.warning_count == 1);
+    config_defaults(&c); CHECK(config_format_args(&c, args, 256) && args[0] == 0);   /* defaults produce no arguments */
 }
 
 static void test_late(void) {
@@ -307,7 +359,7 @@ static void test_analysis(void) {
 }
 
 int main(void) {
-    test_strutil(); test_config(); test_ring(); test_stats(); test_trigger(); test_late(); test_events_and_retention(); test_analysis();
+    test_strutil(); test_config(); test_ring(); test_stats(); test_trigger(); test_storage_trigger(); test_storage_config(); test_late(); test_events_and_retention(); test_analysis();
     printf("%d checks, %d failed\n", g_run, g_fail);
     return g_fail ? 1 : 0;
 }

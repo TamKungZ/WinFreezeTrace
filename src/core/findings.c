@@ -220,6 +220,15 @@ void analysis_run(const AnalysisInput *in, AnalysisResult *r) {
         add(r, CONF_LOW, "ui_latency", "The foreground UI thread was slow to answer messages",
             "A busy or blocked UI thread causes visible stutter even when the system is idle; see hot threads and wait chains.", "WM_NULL latency %s.", p1);
     }
+    if (in->reason == TRIGGER_STORAGE_STALL) {
+        bool have = false;
+        for (int i = 0; i < r->count; ++i) if (!strcmp(r->f[i].id, "disk_latency") || !strcmp(r->f[i].id, "disk_queue")) have = true;
+        if (!have)
+            add(r, CONF_MED, "storage_trigger", "A disk was slow or backed up when the capture started",
+                "Look at the disk columns in timeline.csv and the storage entries in events_digest.csv; check SMART/NVMe health, cables and the storage driver.",
+                "Worst disk at trigger: latency %.1f ms, queue %.1f [%s].", WFT_HAS(s[n - 1].m.disk_worst_latency_ms) ? s[n - 1].m.disk_worst_latency_ms : 0.0,
+                WFT_HAS(s[n - 1].m.disk_worst_queue) ? s[n - 1].m.disk_worst_queue : 0.0, or_q(s[n - 1].m.disk_worst_name));
+    }
     if (in->reason == TRIGGER_MANUAL)
         add(r, CONF_INFO, "manual", "Manual capture", "Findings below describe the lead-in to the key press; no automatic trigger fired.", "Triggered with the hotkey.");
     if (in->reason == TRIGGER_SCHEDULER_STALL && highest_conf(r) < (int)CONF_MED)

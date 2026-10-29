@@ -11,6 +11,8 @@ typedef struct Config {
     uint32_t hang_timeout_ms;    /* WM_NULL probe timeout                   */
     uint32_t hang_samples;       /* consecutive failed probes               */
     uint32_t cooldown_seconds;   /* min gap between automatic captures      */
+    uint32_t disk_latency_ms;    /* worst-disk latency that triggers (0=off)*/
+    uint32_t disk_queue;         /* worst-disk queue that triggers (0=off)  */
     uint32_t lead_seconds;       /* "lead-in" window used by the analysis   */
     uint32_t max_reports;        /* retention: keep newest N (0 = no limit) */
     uint32_t min_free_mb;        /* skip dump / heavy capture below this    */
