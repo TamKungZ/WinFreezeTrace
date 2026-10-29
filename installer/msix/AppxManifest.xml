@@ -18,7 +18,7 @@
     <Resource Language="en-us" />
   </Resources>
   <Applications>
-    <Application Id="Manager" Executable="Manager\WinFreezeTraceManager.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="Manager" Executable="WinFreezeTraceManager.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="WinFreezeTrace Manager"
         Description="Tray icon and control window for the WinFreezeTrace recorder."
@@ -31,7 +31,7 @@
       </uap:VisualElements>
       <Extensions>
         <!-- Same as the installer's optional "Start with Windows" step: off until the user turns it on (Manager or Settings > Apps > Startup). -->
-        <uap5:Extension Category="windows.startupTask" Executable="Manager\WinFreezeTraceManager.exe" EntryPoint="Windows.FullTrustApplication">
+        <uap5:Extension Category="windows.startupTask" Executable="WinFreezeTraceManager.exe" EntryPoint="Windows.FullTrustApplication">
           <uap5:StartupTask TaskId="ManagerStartup" Enabled="false" DisplayName="WinFreezeTrace Manager" />
         </uap5:Extension>
       </Extensions>

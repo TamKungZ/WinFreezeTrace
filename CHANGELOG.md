@@ -9,6 +9,10 @@
   never for the worst one (10 s latency, queue 212), where the foreground app kept answering its message queue. See Added.
 - **Time spent blocked inside the sampling step was invisible.** Lateness was measured around the wait only, so a long `PdhCollectQueryData`, process snapshot or probe
   did not count. It is now added to the lateness of that sample (minus any time the machine slept), and a log line says how it split between counters and probe.
+- **The Store (MSIX) package crashed at launch** (Partner Center certification 10.1.2.10: Application Error 1000, exception 0xc000027b in `Microsoft.UI.Xaml.dll`, the Manager exits within two seconds).
+  The package put the Manager in a `Manager\` subfolder and had no `resources.pri`. WinUI 3 resolves `ms-appx:///` (compiled XAML) and `resources.pri` against the package root, so the XAML could not be loaded.
+  `pack-msix.ps1` now places the Manager at the package root and installs its resource index as `resources.pri`; the manifest points to the new path. The NSIS installer and the zip are unchanged.
+  The Manager now logs a failure in `App` start-up (also to `%TEMP%\WinFreezeTrace.Manager.startup.log`) instead of leaving only the event-log entry. **Not verified in a package**: test with `Add-AppxPackage -Register <stage>\AppxManifest.xml` before submitting.
 - `system_info.txt` said "Windows 10 Pro" on Windows 11 (the registry keeps the old name). Builds >= 22000 now show "Windows 11".
 
 ### Added

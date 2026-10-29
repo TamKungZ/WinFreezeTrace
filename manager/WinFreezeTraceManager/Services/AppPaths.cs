@@ -38,6 +38,15 @@ internal static class Log
         catch { /* logging must never break the app */ }
     }
 
+    /// <summary>A failure while the app is starting. Also written to the temp folder, because the data folder may not exist yet
+    /// and a stowed XAML exception otherwise leaves nothing but "Application Error 1000".</summary>
+    public static void Fatal(string message)
+    {
+        Error(message);
+        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "WinFreezeTrace.Manager.startup.log"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}"); }
+        catch { }
+    }
+
     public static void Info(string message) => Write("INFO", message);
     public static void Warn(string message) => Write("WARN", message);
     public static void Error(string message) => Write("ERROR", message);

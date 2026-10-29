@@ -35,8 +35,23 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) "msix-$Arch"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force (Join-Path $stage 'Assets') | Out-Null
 
-Copy-Item $Exe, $Dll, "$root\LICENSE", "$root\TERMS.txt", "$root\PRIVACY.txt", "$root\README.md", "$root\CHANGELOG.md" $stage
-Copy-Item $ManagerDir (Join-Path $stage 'Manager') -Recurse
+# The Manager is a WinUI 3 app. WinUI resolves ms-appx:/// (App.xbf, the XAML pages) and resources.pri against the PACKAGE ROOT,
+# not against the folder of the exe, so the Manager must sit at the root. In a subfolder it starts fine unpackaged (NSIS, zip)
+# but exits during launch inside the package (Application Error 1000, 0xc000027b in Microsoft.UI.Xaml.dll).
+Copy-Item "$ManagerDir\*" $stage -Recurse -Force
+foreach ($n in 'WinFreezeTrace.exe', 'WinFreezeTraceCore.dll') {
+    if (Test-Path (Join-Path $stage $n)) { throw "The Manager output already contains $n; it would be overwritten by the recorder." }
+}
+Copy-Item $Exe, $Dll, "$root\LICENSE", "$root\TERMS.txt", "$root\PRIVACY.txt", "$root\README.md", "$root\CHANGELOG.md" $stage -Force
+
+if (-not (Test-Path (Join-Path $stage 'WinFreezeTraceManager.exe'))) { throw 'WinFreezeTraceManager.exe is missing from the Manager output.' }
+# A packaged app reads its resource index from <package root>\resources.pri. The unpackaged build names it after the exe.
+if (-not (Test-Path (Join-Path $stage 'resources.pri'))) {
+    $own = Join-Path $stage 'WinFreezeTraceManager.pri'
+    if (-not (Test-Path $own)) { throw 'The Manager output has no .pri resource index (resources.pri or WinFreezeTraceManager.pri); the package would not start.' }
+    Rename-Item $own 'resources.pri'
+}
+if (-not (Test-Path (Join-Path $stage 'App.xbf'))) { Write-Warning 'App.xbf was not found at the package root; check that the Manager output includes the compiled XAML (.xbf) files.' }
 
 Copy-Item "$PSScriptRoot\Assets\*.png" (Join-Path $stage 'Assets')
 
@@ -52,6 +67,8 @@ $manifest = (Get-Content "$PSScriptRoot\AppxManifest.xml" -Raw).
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 & $makeappx pack /d $stage /p $Out /o
 if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }
+Write-Host "Package layout: $stage"
+Write-Host "Test it before uploading (Developer Mode on, no signing needed): Add-AppxPackage -Register '$stage\AppxManifest.xml'"
 
 if ($Pfx) {
     & $signtool sign /fd SHA256 /f $Pfx /p $PfxPassword /tr http://timestamp.digicert.com /td SHA256 $Out

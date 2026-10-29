@@ -24,8 +24,9 @@ public partial class App : Application
 
     public App()
     {
-        InitializeComponent();
-        UnhandledException += (_, e) => { Log.Error("unhandled exception: " + e.Exception); e.Handled = true; };
+        UnhandledException += (_, e) => { Log.Fatal("unhandled exception: " + e.Exception); e.Handled = true; };   // before InitializeComponent, which is where a bad package fails
+        try { InitializeComponent(); }
+        catch (Exception ex) { Log.Fatal("App.InitializeComponent failed (XAML or resources could not be loaded): " + ex); throw; }
     }
 
     private static bool IsStartupTaskActivation()
@@ -35,6 +36,12 @@ public partial class App : Application
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
+    {
+        try { Launch(); }
+        catch (Exception ex) { Log.Fatal("startup failed: " + ex); throw; }
+    }
+
+    private void Launch()
     {
         var argv = Environment.GetCommandLineArgs().Skip(1).ToArray();
         bool background = argv.Any(a => a.Equals("--background", StringComparison.OrdinalIgnoreCase))
